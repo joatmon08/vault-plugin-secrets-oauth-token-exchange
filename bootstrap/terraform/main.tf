@@ -12,13 +12,6 @@ provider "vault" {
   # Configuration will be taken from VAULT_ADDR and VAULT_TOKEN environment variables
 }
 
-# Enable the identity secrets engine for actor tokens
-resource "vault_mount" "identity" {
-  path        = "identity"
-  type        = "identity"
-  description = "Identity secrets engine for actor tokens"
-}
-
 # Create an OIDC provider for subject tokens
 resource "vault_identity_oidc_key" "key" {
   name               = "oauth-token-exchange"
@@ -27,23 +20,29 @@ resource "vault_identity_oidc_key" "key" {
   verification_ttl   = 3600
 }
 
+resource "vault_identity_oidc_scope" "helloworld" {
+  name        = "helloworld-read"
+  template    = "{\"scopes\":[\"helloworld:read\"]}"
+  description = "Helloworld read scope"
+}
+
 resource "vault_identity_oidc_provider" "provider" {
-  name          = "oauth-provider"
+  name          = "test"
   https_enabled = false
   issuer_host   = "localhost:8200"
   allowed_client_ids = [
     vault_identity_oidc_client.client.client_id
   ]
-  scopes_supported = ["openid", "profile", "email"]
+  scopes_supported = [vault_identity_oidc_scope.helloworld.name]
 }
 
 resource "vault_identity_oidc_client" "client" {
-  name          = "oauth-client"
-  key           = vault_identity_oidc_key.key.name
+  name = "test"
+  key  = vault_identity_oidc_key.key.name
   redirect_uris = [
     "http://localhost:8200/v1/oauth-token-exchange/callback"
   ]
-  assignments = []
+  assignments      = []
   id_token_ttl     = 2400
   access_token_ttl = 7200
 }
