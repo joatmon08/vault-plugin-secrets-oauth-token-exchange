@@ -30,18 +30,6 @@ resource "vault_auth_backend" "approle" {
   type = "approle"
 }
 
-locals {
-  client_agents = {
-    "test-client" = {
-      "scopes" : "helloworld:read"
-    },
-    "second-client" = {
-      "scopes" : "helloworld:read"
-    }
-
-  }
-}
-
 resource "vault_policy" "actor_token" {
   for_each = local.client_agents
   name     = each.key
@@ -95,22 +83,111 @@ resource "vault_identity_oidc_role" "client_agents" {
 }
 
 # Set up Vault as an OIDC provider
-# Scope must include a may_act claim as per RFC 8693
+# Scope must include a may_act claim as per RFC 8693.
+# Client must get the subject token based on the id_token field
+# of the Vault OIDC token endpoint.
+# The subject token has the following format.
+# {
+#   "at_hash": "6KWjQ3hYifa5e5qw1qzIow",
+#   "aud": "pZTfZRna11PNtJw3zcWIlPmR0ffAIr4Q",
+#   "c_hash": "I5YtF3bXk3LtiUd0y6kGSg",
+#   "client_id": "end-user",
+#   "exp": 1775241406,
+#   "iat": 1775239006,
+#   "iss": "http://localhost:8200/v1/identity/oidc/provider/test",
+#   "may_act": {
+#     "aud": [
+#       "second-client",
+#       "test-client"
+#     ]
+#   },
+#   "namespace": "root",
+#   "sub": "613d7d98-5468-4738-3188-e981026a588d"
+# }
 
 resource "vault_identity_oidc_scope" "may_act" {
   name        = "may-act"
-  template    = "{\"may_act\":{\"sub\":${jsonencode([for agent in vault_identity_entity.client_agents : agent.id])}} }"
-  description = "Helloworld read scope"
+  template    = <<EOT
+{
+  "client_id": {{identity.entity.name}},
+  "may_act": {
+    "aud": ${jsonencode(keys(local.client_agents))}
+  }
+}
+EOT
+  description = "May act claim that includes what agents can act on behalf of user"
 }
 
-resource "vault_identity_oidc_provider" "provider" {
-  name          = "test"
-  https_enabled = false
-  issuer_host   = "localhost:8200"
-  allowed_client_ids = [
-    vault_identity_oidc_client.client.client_id
+resource "vault_policy" "agent_oidc_authorize" {
+  name = "agent-oidc-authorize"
+
+  policy = <<EOT
+path "identity/oidc/provider/${vault_identity_oidc_provider.provider.name}/authorize" {
+  capabilities = [ "read" ]
+}
+EOT
+}
+
+resource "vault_policy" "agent_oidc_client" {
+  name = "agent-oidc-client"
+
+  policy = <<EOT
+path "identity/oidc/client/${vault_identity_oidc_provider.provider.name}" {
+  capabilities = [ "read" ]
+}
+EOT
+}
+
+resource "vault_policy" "agent_token_verify" {
+  name = "agent-token-verify"
+
+  policy = <<EOT
+path "identity/oidc/introspect" {
+  capabilities = ["update"]
+}
+
+path "identity/oidc/introspect/*" {
+  capabilities = ["read"]
+}
+EOT
+}
+
+resource "vault_auth_backend" "userpass" {
+  type = "userpass"
+}
+
+resource "random_password" "end_user" {
+  length  = 16
+  special = false
+}
+
+resource "vault_generic_endpoint" "end_user" {
+  path                 = "auth/${vault_auth_backend.userpass.path}/users/${local.end_user}"
+  ignore_absent_fields = true
+  data_json            = <<EOT
+{
+  "token_policies": ["${vault_policy.agent_oidc_authorize.name}"],
+  "token_ttl": "1h",
+  "password": "${random_password.end_user.result}"
+}
+EOT
+}
+
+resource "vault_identity_entity" "end_user" {
+  name = local.end_user
+}
+
+resource "vault_identity_entity_alias" "end_user" {
+  name           = local.end_user
+  mount_accessor = vault_auth_backend.userpass.accessor
+  canonical_id   = vault_identity_entity.end_user.id
+}
+
+resource "vault_identity_oidc_assignment" "test" {
+  name = "test"
+  entity_ids = [
+    vault_identity_entity.end_user.id,
   ]
-  scopes_supported = []
 }
 
 # Create an OIDC provider for subject tokens
@@ -125,12 +202,28 @@ resource "vault_identity_oidc_client" "client" {
   name = "test"
   key  = vault_identity_oidc_key.key.name
   redirect_uris = [
+    "http://localhost:9000/callback",
     "http://localhost:8200/v1/oauth-token-exchange/callback"
   ]
-  assignments      = []
+  assignments = [
+    vault_identity_oidc_assignment.test.name
+  ]
   id_token_ttl     = 2400
   access_token_ttl = 7200
 }
+
+resource "vault_identity_oidc_provider" "provider" {
+  name          = "test"
+  https_enabled = false
+  issuer_host   = "localhost:8200"
+  allowed_client_ids = [
+    vault_identity_oidc_client.client.client_id
+  ]
+  scopes_supported = [
+    vault_identity_oidc_scope.may_act.name
+  ]
+}
+
 
 # Output the client credentials
 output "oidc_client_id" {
@@ -152,5 +245,11 @@ output "oidc_provider_issuer" {
 output "client_agent_vault_tokens" {
   value       = { for agent, attributes in vault_approle_auth_backend_login.client_agents : agent => attributes.client_token }
   description = "Vault tokens for agents"
+  sensitive   = true
+}
+
+output "end_user_password" {
+  value       = random_password.end_user.result
+  description = "End user password"
   sensitive   = true
 }
