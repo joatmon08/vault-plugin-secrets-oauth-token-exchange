@@ -16,9 +16,6 @@ const (
 // roleEntry defines the data required for a Vault role to perform token exchange
 type roleEntry struct {
 	Name                       string        `json:"name"`
-	Audience                   string        `json:"audience"`
-	Resource                   string        `json:"resource"`
-	Scope                      string        `json:"scope"`
 	IdentitySecretsEnginePath  string        `json:"identity_secrets_engine_path"`
 	VaultAddr                  string        `json:"vault_addr"`
 	VaultNamespace             string        `json:"vault_namespace"`
@@ -35,15 +32,6 @@ func (r *roleEntry) toResponseData() map[string]interface{} {
 		"max_ttl": int64(r.MaxTTL.Seconds()),
 	}
 	
-	if r.Audience != "" {
-		respData["audience"] = r.Audience
-	}
-	if r.Resource != "" {
-		respData["resource"] = r.Resource
-	}
-	if r.Scope != "" {
-		respData["scope"] = r.Scope
-	}
 	if r.IdentitySecretsEnginePath != "" {
 		respData["identity_secrets_engine_path"] = r.IdentitySecretsEnginePath
 	}
@@ -70,18 +58,6 @@ func pathRole(b *oauthBackend) []*framework.Path {
 					Type:        framework.TypeString,
 					Description: "Name of the role",
 					Required:    true,
-				},
-				"audience": {
-					Type:        framework.TypeString,
-					Description: "Audience for the token exchange request",
-				},
-				"resource": {
-					Type:        framework.TypeString,
-					Description: "Resource for the token exchange request",
-				},
-				"scope": {
-					Type:        framework.TypeString,
-					Description: "Scope for the token exchange request",
 				},
 				"identity_secrets_engine_path": {
 					Type:        framework.TypeString,
@@ -198,16 +174,6 @@ func (b *oauthBackend) pathRoleWrite(ctx context.Context, req *logical.Request, 
 		TTL:    time.Duration(data.Get("ttl").(int)) * time.Second,
 		MaxTTL: time.Duration(data.Get("max_ttl").(int)) * time.Second,
 	}
-
-	if audience, ok := data.GetOk("audience"); ok {
-		role.Audience = audience.(string)
-	}
-	if resource, ok := data.GetOk("resource"); ok {
-		role.Resource = resource.(string)
-	}
-	if scope, ok := data.GetOk("scope"); ok {
-		role.Scope = scope.(string)
-	}
 	
 	// Set identity_secrets_engine_path with default value
 	if identityPath, ok := data.GetOk("identity_secrets_engine_path"); ok {
@@ -290,13 +256,14 @@ const pathRoleHelpSynopsis = `Manage roles for OAuth 2.0 token exchange.`
 
 const pathRoleHelpDescription = `
 This path allows you to create, read, update, and delete roles used for OAuth 2.0 token exchange.
-Each role defines optional parameters like audience, resource, and scope as defined in RFC 8693.
-The secrets engine will return an OAuth access token.
+Roles define the configuration for retrieving actor tokens from Vault's identity secrets engine.
 
-Roles can also specify identity_secrets_engine_path (default: 'identity') to retrieve actor tokens
+Each role can specify identity_secrets_engine_path (default: 'identity') to retrieve actor tokens
 from Vault's identity secrets engine, enabling delegation scenarios. When using actor tokens, you
 must also provide vault_addr, vault_token, and optionally vault_namespace (for Vault Enterprise)
 with permissions to read from the identity secrets engine.
+
+Clients provide audience, resource, and scope parameters per-request when exchanging tokens.
 `
 
 const pathRoleListHelpSynopsis = `List all configured roles.`
