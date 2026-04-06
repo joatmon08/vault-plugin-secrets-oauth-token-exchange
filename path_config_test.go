@@ -18,36 +18,24 @@ func TestConfig(t *testing.T) {
 		{
 			name: "valid configuration",
 			config: map[string]interface{}{
-				"client_id":         "test-client-id",
-				"client_secret":     "test-client-secret",
-				"userinfo_endpoint": "https://provider.example.com/userinfo",
+				"client_id":     "test-client-id",
+				"client_secret": "test-client-secret",
 			},
 			expected: map[string]interface{}{
-				"client_id":         "test-client-id",
-				"userinfo_endpoint": "https://provider.example.com/userinfo",
+				"client_id": "test-client-id",
 			},
 		},
 		{
 			name: "missing client_id",
 			config: map[string]interface{}{
-				"client_secret":     "test-client-secret",
-				"userinfo_endpoint": "https://provider.example.com/userinfo",
+				"client_secret": "test-client-secret",
 			},
 			wantErr: true,
 		},
 		{
 			name: "missing client_secret",
 			config: map[string]interface{}{
-				"client_id":         "test-client-id",
-				"userinfo_endpoint": "https://provider.example.com/userinfo",
-			},
-			wantErr: true,
-		},
-		{
-			name: "missing userinfo_endpoint",
-			config: map[string]interface{}{
-				"client_id":     "test-client-id",
-				"client_secret": "test-client-secret",
+				"client_id": "test-client-id",
 			},
 			wantErr: true,
 		},
@@ -64,9 +52,8 @@ func TestConfig(t *testing.T) {
 				// Test that updating one element retains the others
 				tc.expected["client_id"] = "updated-client-id"
 				configSubset := map[string]interface{}{
-					"client_id":         "updated-client-id",
-					"client_secret":     "test-client-secret",
-					"userinfo_endpoint": "https://provider.example.com/userinfo",
+					"client_id":     "updated-client-id",
+					"client_secret": "test-client-secret",
 				}
 
 				testConfigUpdate(t, b, s, configSubset, false)
@@ -81,9 +68,8 @@ func TestConfigDelete(t *testing.T) {
 
 	// Create valid config
 	config := map[string]interface{}{
-		"client_id":         "test-client-id",
-		"client_secret":     "test-client-secret",
-		"userinfo_endpoint": "https://provider.example.com/userinfo",
+		"client_id":     "test-client-id",
+		"client_secret": "test-client-secret",
 	}
 
 	testConfigCreate(t, b, s, config, false)

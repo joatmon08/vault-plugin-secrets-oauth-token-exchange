@@ -15,37 +15,18 @@ const (
 
 // roleEntry defines the data required for a Vault role to perform token exchange
 type roleEntry struct {
-	Name                       string        `json:"name"`
-	IdentitySecretsEnginePath  string        `json:"identity_secrets_engine_path"`
-	VaultAddr                  string        `json:"vault_addr"`
-	VaultNamespace             string        `json:"vault_namespace"`
-	VaultToken                 string        `json:"vault_token"`
-	TTL                        time.Duration `json:"ttl"`
-	MaxTTL                     time.Duration `json:"max_ttl"`
+	Name   string        `json:"name"`
+	TTL    time.Duration `json:"ttl"`
+	MaxTTL time.Duration `json:"max_ttl"`
 }
 
 // toResponseData returns response data for a role
 func (r *roleEntry) toResponseData() map[string]interface{} {
-	respData := map[string]interface{}{
+	return map[string]interface{}{
 		"name":    r.Name,
 		"ttl":     int64(r.TTL.Seconds()),
 		"max_ttl": int64(r.MaxTTL.Seconds()),
 	}
-	
-	if r.IdentitySecretsEnginePath != "" {
-		respData["identity_secrets_engine_path"] = r.IdentitySecretsEnginePath
-	}
-	if r.VaultAddr != "" {
-		respData["vault_addr"] = r.VaultAddr
-	}
-	if r.VaultNamespace != "" {
-		respData["vault_namespace"] = r.VaultNamespace
-	}
-	if r.VaultToken != "" {
-		respData["vault_token_set"] = true
-	}
-	
-	return respData
 }
 
 // pathRole extends the Vault API with a `/role` endpoint for the backend
@@ -58,26 +39,6 @@ func pathRole(b *oauthBackend) []*framework.Path {
 					Type:        framework.TypeString,
 					Description: "Name of the role",
 					Required:    true,
-				},
-				"identity_secrets_engine_path": {
-					Type:        framework.TypeString,
-					Description: "Path to Vault identity secrets engine for actor_token (default: 'identity')",
-					Default:     "identity",
-				},
-				"vault_addr": {
-					Type:        framework.TypeString,
-					Description: "Vault address for retrieving actor tokens from identity secrets engine",
-				},
-				"vault_namespace": {
-					Type:        framework.TypeString,
-					Description: "Vault namespace for retrieving actor tokens (Vault Enterprise only)",
-				},
-				"vault_token": {
-					Type:        framework.TypeString,
-					Description: "Vault token with access to the identity secrets engine for retrieving actor tokens",
-					DisplayAttrs: &framework.DisplayAttributes{
-						Sensitive: true,
-					},
 				},
 				"ttl": {
 					Type:        framework.TypeDurationSecond,
@@ -174,23 +135,6 @@ func (b *oauthBackend) pathRoleWrite(ctx context.Context, req *logical.Request, 
 		TTL:    time.Duration(data.Get("ttl").(int)) * time.Second,
 		MaxTTL: time.Duration(data.Get("max_ttl").(int)) * time.Second,
 	}
-	
-	// Set identity_secrets_engine_path with default value
-	if identityPath, ok := data.GetOk("identity_secrets_engine_path"); ok {
-		role.IdentitySecretsEnginePath = identityPath.(string)
-	} else {
-		role.IdentitySecretsEnginePath = "identity"
-	}
-	
-	if vaultAddr, ok := data.GetOk("vault_addr"); ok {
-		role.VaultAddr = vaultAddr.(string)
-	}
-	if vaultNamespace, ok := data.GetOk("vault_namespace"); ok {
-		role.VaultNamespace = vaultNamespace.(string)
-	}
-	if vaultToken, ok := data.GetOk("vault_token"); ok {
-		role.VaultToken = vaultToken.(string)
-	}
 
 	// Validate TTL values
 	if role.MaxTTL > 0 && role.TTL > role.MaxTTL {
@@ -256,12 +200,7 @@ const pathRoleHelpSynopsis = `Manage roles for OAuth 2.0 token exchange.`
 
 const pathRoleHelpDescription = `
 This path allows you to create, read, update, and delete roles used for OAuth 2.0 token exchange.
-Roles define the configuration for retrieving actor tokens from Vault's identity secrets engine.
-
-Each role can specify identity_secrets_engine_path (default: 'identity') to retrieve actor tokens
-from Vault's identity secrets engine, enabling delegation scenarios. When using actor tokens, you
-must also provide vault_addr, vault_token, and optionally vault_namespace (for Vault Enterprise)
-with permissions to read from the identity secrets engine.
+Roles define TTL settings for tokens issued during the exchange process.
 
 Clients provide audience, resource, and scope parameters per-request when exchanging tokens.
 `

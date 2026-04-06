@@ -19,21 +19,13 @@ func TestRole(t *testing.T) {
 		{
 			name: "valid role with all fields",
 			role: map[string]interface{}{
-				"identity_secrets_engine_path": "custom-identity",
-				"vault_addr":                   "http://localhost:8200",
-				"vault_namespace":              "test-namespace",
-				"vault_token":                  "s.test-token",
-				"ttl":                          3600,
-				"max_ttl":                      86400,
+				"ttl":     3600,
+				"max_ttl": 86400,
 			},
 			expected: map[string]interface{}{
-				"name":                         "test-role-all",
-				"identity_secrets_engine_path": "custom-identity",
-				"vault_addr":                   "http://localhost:8200",
-				"vault_namespace":              "test-namespace",
-				"vault_token_set":              true,
-				"ttl":                          int64(3600),
-				"max_ttl":                      int64(86400),
+				"name":    "test-role-all",
+				"ttl":     int64(3600),
+				"max_ttl": int64(86400),
 			},
 		},
 		{
@@ -43,25 +35,18 @@ func TestRole(t *testing.T) {
 				"max_ttl": 7200,
 			},
 			expected: map[string]interface{}{
-				"name":                         "test-role-minimal",
-				"identity_secrets_engine_path": "identity",
-				"ttl":                          int64(1800),
-				"max_ttl":                      int64(7200),
+				"name":    "test-role-minimal",
+				"ttl":     int64(1800),
+				"max_ttl": int64(7200),
 			},
 		},
 		{
-			name: "valid role with default identity path",
-			role: map[string]interface{}{
-				"vault_addr":  "http://localhost:8200",
-				"vault_token": "s.test-token",
-			},
+			name: "valid role with default values",
+			role: map[string]interface{}{},
 			expected: map[string]interface{}{
-				"name":                         "test-role-default",
-				"identity_secrets_engine_path": "identity",
-				"vault_addr":                   "http://localhost:8200",
-				"vault_token_set":              true,
-				"ttl":                          int64(3600),
-				"max_ttl":                      int64(86400),
+				"name":    "test-role-default",
+				"ttl":     int64(3600),
+				"max_ttl": int64(86400),
 			},
 		},
 		{
@@ -99,37 +84,25 @@ func TestRoleUpdate(t *testing.T) {
 
 	// Create initial role
 	role := map[string]interface{}{
-		"identity_secrets_engine_path": "custom-identity",
-		"vault_addr":                   "http://localhost:8200",
-		"vault_namespace":              "test-namespace",
-		"vault_token":                  "s.test-token",
-		"ttl":                          3600,
-		"max_ttl":                      86400,
+		"ttl":     3600,
+		"max_ttl": 86400,
 	}
 
 	testRoleCreate(t, b, s, "test-role", role, false)
 
-	// Update vault_addr
+	// Update ttl
 	roleUpdate := map[string]interface{}{
-		"identity_secrets_engine_path": "custom-identity",
-		"vault_addr":                   "http://localhost:8300",
-		"vault_namespace":              "test-namespace",
-		"vault_token":                  "s.test-token",
-		"ttl":                          3600,
-		"max_ttl":                      86400,
+		"ttl":     7200,
+		"max_ttl": 86400,
 	}
 
 	testRoleUpdate(t, b, s, "test-role", roleUpdate, false)
 
 	// Verify update
 	expected := map[string]interface{}{
-		"name":                         "test-role",
-		"identity_secrets_engine_path": "custom-identity",
-		"vault_addr":                   "http://localhost:8300",
-		"vault_namespace":              "test-namespace",
-		"vault_token_set":              true,
-		"ttl":                          int64(3600),
-		"max_ttl":                      int64(86400),
+		"name":    "test-role",
+		"ttl":     int64(7200),
+		"max_ttl": int64(86400),
 	}
 
 	testRoleRead(t, b, s, "test-role", expected)
@@ -140,8 +113,8 @@ func TestRoleDelete(t *testing.T) {
 
 	// Create valid role
 	role := map[string]interface{}{
-		"vault_addr":  "http://localhost:8200",
-		"vault_token": "s.test-token",
+		"ttl":     3600,
+		"max_ttl": 86400,
 	}
 
 	testRoleCreate(t, b, s, "test-role", role, false)
@@ -184,8 +157,8 @@ func TestRoleList(t *testing.T) {
 	roles := []string{"role1", "role2", "role3"}
 	for _, roleName := range roles {
 		role := map[string]interface{}{
-			"vault_addr":  "http://localhost:8200",
-			"vault_token": "s.test-token",
+			"ttl":     3600,
+			"max_ttl": 86400,
 		}
 		testRoleCreate(t, b, s, roleName, role, false)
 	}
@@ -210,8 +183,8 @@ func TestRoleExistenceCheck(t *testing.T) {
 
 	// Create a role
 	role := map[string]interface{}{
-		"vault_addr":  "http://localhost:8200",
-		"vault_token": "s.test-token",
+		"ttl":     3600,
+		"max_ttl": 86400,
 	}
 	testRoleCreate(t, b, s, "test-role", role, false)
 
@@ -249,15 +222,12 @@ func TestRoleExistenceCheck(t *testing.T) {
 func TestRoleDefaultValues(t *testing.T) {
 	b, s := getTestBackend(t)
 
-	// Create role without specifying identity_secrets_engine_path
-	role := map[string]interface{}{
-		"vault_addr":  "http://localhost:8200",
-		"vault_token": "s.test-token",
-	}
+	// Create role without specifying TTL values
+	role := map[string]interface{}{}
 
 	testRoleCreate(t, b, s, "test-role", role, false)
 
-	// Read and verify default value
+	// Read and verify default values
 	resp, err := b.HandleRequest(context.Background(), &logical.Request{
 		Operation: logical.ReadOperation,
 		Path:      "role/test-role",
@@ -266,9 +236,6 @@ func TestRoleDefaultValues(t *testing.T) {
 	assert.NoError(t, err)
 	assert.NotNil(t, resp)
 	assert.False(t, resp.IsError())
-
-	// Verify default identity_secrets_engine_path is "identity"
-	assert.Equal(t, "identity", resp.Data["identity_secrets_engine_path"])
 
 	// Verify default TTL values
 	assert.Equal(t, int64(3600), resp.Data["ttl"])

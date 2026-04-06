@@ -2,14 +2,20 @@ package oauth
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
-	"time"
+	"strings"
 
 	"github.com/hashicorp/vault/api"
 	"github.com/hashicorp/vault/sdk/framework"
 	"github.com/hashicorp/vault/sdk/logical"
+)
+
+const (
+	// Token type constants as defined in RFC 8693
+	grantTypeTokenExchange = "urn:ietf:params:oauth:grant-type:token-exchange"
+	tokenTypeAccessToken   = "urn:ietf:params:oauth:token-type:access_token"
 )
 
 // pathToken extends the Vault API with token exchange endpoints
@@ -25,12 +31,25 @@ func pathToken(b *oauthBackend) []*framework.Path {
 				},
 				"subject_token": {
 					Type:        framework.TypeString,
-					Description: "Subject token to be exchanged (obtained externally)",
+					Description: "Subject token to be exchanged (obtained from the id_token field of the Vault OIDC provider token endpoint)",
 					Required:    true,
 				},
 				"actor_token": {
 					Type:        framework.TypeString,
-					Description: "Optional actor token for delegation scenarios",
+					Description: "Actor token to exchanged (obtained from identity/oidc/token/:name endpoint of Vault identity tokens)",
+					Required:    true,
+				},
+				"client_id": {
+					Type:        framework.TypeString,
+					Description: "OAuth 2.0 client ID",
+				},
+				"audience": {
+					Type:        framework.TypeString,
+					Description: "Target audience for the token",
+				},
+				"scope": {
+					Type:        framework.TypeString,
+					Description: "Requested scope for the token",
 				},
 			},
 			Operations: map[logical.Operation]framework.OperationHandler{
@@ -57,6 +76,13 @@ func (b *oauthBackend) pathTokenExchange(ctx context.Context, req *logical.Reque
 		return logical.ErrorResponse("missing subject_token"), nil
 	}
 
+	actorToken := data.Get("actor_token").(string)
+	if actorToken == "" {
+		return logical.ErrorResponse("missing actor_token"), nil
+	}
+
+	grantType := grantTypeTokenExchange
+
 	// Get the role
 	role, err := getRole(ctx, req.Storage, roleName)
 	if err != nil {
@@ -75,20 +101,31 @@ func (b *oauthBackend) pathTokenExchange(ctx context.Context, req *logical.Reque
 		return logical.ErrorResponse("configuration not found"), nil
 	}
 
-	// Get actor token if specified
-	var actorToken string
-	if actorTokenInput, ok := data.GetOk("actor_token"); ok {
-		actorToken = actorTokenInput.(string)
-	} else if role.IdentitySecretsEnginePath != "" && role.VaultAddr != "" {
-		// Retrieve actor token from Vault identity
-		actorToken, err = b.getActorToken(ctx, req, role)
-		if err != nil {
-			return nil, fmt.Errorf("failed to retrieve actor token: %w", err)
+	// Get parameters from request
+	var clientID, audience, scope string
+	if cid, ok := data.GetOk("client_id"); ok {
+		clientID = cid.(string)
+	} else {
+		clientID = config.ClientID
+	}
+
+	if aud, ok := data.GetOk("audience"); ok {
+		audience = aud.(string)
+	}
+
+	if scp, ok := data.GetOk("scope"); ok {
+		scope = scp.(string)
+	}
+
+	// Verify the actor token if vault configuration is available
+	if config.VaultAddr != "" && config.IdentitySecretsEnginePath != "" {
+		if err = b.verifyActorToken(ctx, req, config, actorToken, clientID); err != nil {
+			return nil, fmt.Errorf("actor token verification failed: %w", err)
 		}
 	}
 
 	// Perform token exchange
-	exchangedToken, err := b.performTokenExchange(ctx, config, role, subjectToken, actorToken)
+	exchangedToken, err := b.performTokenExchange(ctx, config, role, subjectToken, actorToken, grantType, clientID, audience, scope)
 	if err != nil {
 		return nil, fmt.Errorf("token exchange failed: %w", err)
 	}
@@ -100,7 +137,7 @@ func (b *oauthBackend) pathTokenExchange(ctx context.Context, req *logical.Reque
 
 // performTokenExchange executes the RFC 8693 token exchange
 // This secrets engine itself acts as the token exchange endpoint
-func (b *oauthBackend) performTokenExchange(ctx context.Context, config *oauthConfig, role *roleEntry, subjectToken, actorToken string) (map[string]interface{}, error) {
+func (b *oauthBackend) performTokenExchange(ctx context.Context, config *oauthConfig, role *roleEntry, subjectToken, actorToken, grantType, clientID, audience, scope string) (map[string]interface{}, error) {
 	// Verify the subject token against the userinfo endpoint
 	if err := b.verifySubjectToken(ctx, config, subjectToken); err != nil {
 		return nil, fmt.Errorf("subject token verification failed: %w", err)
@@ -108,23 +145,22 @@ func (b *oauthBackend) performTokenExchange(ctx context.Context, config *oauthCo
 
 	// Build the token response according to RFC 8693
 	tokenResponse := map[string]interface{}{
-		"access_token":  subjectToken,
-		"issued_token_type": "urn:ietf:params:oauth:token-type:access_token",
-		"token_type":    "Bearer",
+		"access_token":      subjectToken,
+		"issued_token_type": tokenTypeAccessToken,
+		"token_type":        "Bearer",
+		"grant_type":        grantType,
+		"client_id":         clientID,
 	}
 
 	// Add optional fields if present
 	if actorToken != "" {
 		tokenResponse["actor_token"] = actorToken
 	}
-	if role.Audience != "" {
-		tokenResponse["audience"] = role.Audience
+	if audience != "" {
+		tokenResponse["audience"] = audience
 	}
-	if role.Resource != "" {
-		tokenResponse["resource"] = role.Resource
-	}
-	if role.Scope != "" {
-		tokenResponse["scope"] = role.Scope
+	if scope != "" {
+		tokenResponse["scope"] = scope
 	}
 
 	// Add TTL information
@@ -135,80 +171,97 @@ func (b *oauthBackend) performTokenExchange(ctx context.Context, config *oauthCo
 	return tokenResponse, nil
 }
 
-// verifySubjectToken verifies the subject token against the userinfo endpoint
+// verifySubjectToken verifies the subject token by decoding the JWT
 func (b *oauthBackend) verifySubjectToken(ctx context.Context, config *oauthConfig, token string) error {
-	req, err := http.NewRequestWithContext(ctx, "GET", config.UserinfoEndpoint, nil)
+	// Split the JWT into its three parts
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		return fmt.Errorf("invalid JWT format: expected 3 parts, got %d", len(parts))
+	}
+
+	// Decode the payload (second part)
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
 	if err != nil {
-		return fmt.Errorf("failed to create userinfo request: %w", err)
+		return fmt.Errorf("failed to decode JWT payload: %w", err)
 	}
 
-	req.Header.Set("Authorization", "Bearer "+token)
-
-	client := &http.Client{
-		Timeout: 10 * time.Second,
+	// Parse the payload as JSON to verify it's valid
+	var claims map[string]interface{}
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		return fmt.Errorf("failed to parse JWT claims: %w", err)
 	}
 
-	resp, err := client.Do(req)
-	if err != nil {
-		return fmt.Errorf("failed to call userinfo endpoint: %w", err)
+	// Verify that the token has required claims
+	if _, ok := claims["sub"]; !ok {
+		return fmt.Errorf("JWT missing required 'sub' claim")
 	}
-	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("userinfo endpoint returned status %d: %s", resp.StatusCode, string(body))
-	}
+	// Note: This is a basic validation. In production, you should also:
+	// - Verify the signature using the issuer's public key
+	// - Check the 'exp' (expiration) claim
+	// - Check the 'iss' (issuer) claim
+	// - Check the 'aud' (audience) claim if required
 
 	return nil
 }
 
-// getActorToken retrieves an actor token from Vault's identity secrets
-func (b *oauthBackend) getActorToken(ctx context.Context, req *logical.Request, role *roleEntry) (string, error) {
-	if role.VaultToken == "" {
-		return "", fmt.Errorf("vault_token not configured for role %s - required to retrieve actor tokens from identity secrets engine", role.Name)
+// verifyActorToken introspects an actor token to verify it's still active
+func (b *oauthBackend) verifyActorToken(ctx context.Context, req *logical.Request, config *oauthConfig, actorToken string, clientID string) error {
+	if config.VaultToken == "" {
+		return fmt.Errorf("vault_token not configured - required to verify actor tokens")
 	}
 
-	if role.VaultAddr == "" {
-		return "", fmt.Errorf("vault_addr not configured for role %s - required to retrieve actor tokens from identity secrets engine", role.Name)
+	if config.VaultAddr == "" {
+		return fmt.Errorf("vault_addr not configured - required to verify actor tokens")
 	}
 
-	if role.IdentitySecretsEnginePath == "" {
-		return "", fmt.Errorf("identity_secrets_engine_path not configured for role %s", role.Name)
+	if config.IdentitySecretsEnginePath == "" {
+		return fmt.Errorf("identity_secrets_engine_path not configured")
 	}
 
 	// Create a Vault API client
 	vaultConfig := api.DefaultConfig()
-	vaultConfig.Address = role.VaultAddr
-	
+	vaultConfig.Address = config.VaultAddr
+
 	client, err := api.NewClient(vaultConfig)
 	if err != nil {
-		return "", fmt.Errorf("failed to create Vault client: %w", err)
+		return fmt.Errorf("failed to create Vault client: %w", err)
 	}
 
 	// Set the token and namespace if provided
-	client.SetToken(role.VaultToken)
-	if role.VaultNamespace != "" {
-		client.SetNamespace(role.VaultNamespace)
+	client.SetToken(config.VaultToken)
+	if config.VaultNamespace != "" {
+		client.SetNamespace(config.VaultNamespace)
 	}
 
-	// Read the actor token from the identity secrets engine
-	// The path format is typically: identity/oidc/token/<role-name>
-	tokenPath := fmt.Sprintf("%s/oidc/token/%s", role.IdentitySecretsEnginePath, role.Name)
-	secret, err := client.Logical().Read(tokenPath)
+	// Introspect the token to verify it's still active
+	// API: POST /identity/oidc/introspect
+	introspectPath := fmt.Sprintf("%s/oidc/introspect", config.IdentitySecretsEnginePath)
+	introspectData := map[string]interface{}{
+		"token":     actorToken,
+		"client_id": clientID,
+	}
+
+	introspectResp, err := client.Logical().Write(introspectPath, introspectData)
 	if err != nil {
-		return "", fmt.Errorf("failed to read actor token from %s: %w", tokenPath, err)
+		return fmt.Errorf("failed to introspect actor token: %w", err)
 	}
 
-	if secret == nil || secret.Data == nil {
-		return "", fmt.Errorf("no data returned from actor token path %s", tokenPath)
+	if introspectResp == nil || introspectResp.Data == nil {
+		return fmt.Errorf("no data returned from token introspection")
 	}
 
-	token, ok := secret.Data["token"].(string)
+	// Check if token is active
+	active, ok := introspectResp.Data["active"].(bool)
 	if !ok {
-		return "", fmt.Errorf("invalid token format from actor token path %s", tokenPath)
+		return fmt.Errorf("invalid introspection response: missing 'active' field")
 	}
 
-	return token, nil
+	if !active {
+		return fmt.Errorf("actor token is not active")
+	}
+
+	return nil
 }
 
 const pathTokenHelpSynopsis = `Exchange tokens using RFC 8693 OAuth 2.0 Token Exchange.`
@@ -218,9 +271,9 @@ This endpoint performs OAuth 2.0 token exchange according to RFC 8693.
 It requires a subject_token (obtained externally from an OIDC provider) and optionally
 an actor_token (from Vault's identity secrets) for delegation scenarios.
 
-The subject token is verified against the configured OIDC provider's userinfo endpoint
-before performing the token exchange. The endpoint returns an exchanged access token
-that can be used with the target resource.
+The subject token is verified by decoding and validating the JWT before performing
+the token exchange. The endpoint returns an exchanged access token that can be used
+with the target resource.
 `
 
 // Made with Bob

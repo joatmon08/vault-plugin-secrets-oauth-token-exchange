@@ -15,9 +15,12 @@ const (
 // oauthConfig includes the configuration required to instantiate
 // a new OAuth client for token exchange
 type oauthConfig struct {
-	ClientID         string `json:"client_id"`
-	ClientSecret     string `json:"client_secret"`
-	UserinfoEndpoint string `json:"userinfo_endpoint"`
+	ClientID                   string `json:"client_id"`
+	ClientSecret               string `json:"client_secret"`
+	IdentitySecretsEnginePath  string `json:"identity_secrets_engine_path"`
+	VaultAddr                  string `json:"vault_addr"`
+	VaultNamespace             string `json:"vault_namespace"`
+	VaultToken                 string `json:"vault_token"`
 }
 
 // pathConfig extends the Vault API with a `/config` endpoint for the backend
@@ -39,10 +42,25 @@ func pathConfig(b *oauthBackend) []*framework.Path {
 						Sensitive: true,
 					},
 				},
-				"userinfo_endpoint": {
+				"identity_secrets_engine_path": {
 					Type:        framework.TypeString,
-					Description: "OIDC userinfo endpoint URL for verifying subject tokens",
-					Required:    true,
+					Description: "Path to Vault identity secrets engine for actor_token (default: 'identity')",
+					Default:     "identity",
+				},
+				"vault_addr": {
+					Type:        framework.TypeString,
+					Description: "Vault address for retrieving actor tokens from identity secrets engine",
+				},
+				"vault_namespace": {
+					Type:        framework.TypeString,
+					Description: "Vault namespace for retrieving actor tokens (Vault Enterprise only)",
+				},
+				"vault_token": {
+					Type:        framework.TypeString,
+					Description: "Vault token with access to the identity secrets engine for retrieving actor tokens",
+					DisplayAttrs: &framework.DisplayAttributes{
+						Sensitive: true,
+					},
 				},
 			},
 			Operations: map[logical.Operation]framework.OperationHandler{
@@ -90,11 +108,25 @@ func (b *oauthBackend) pathConfigRead(ctx context.Context, req *logical.Request,
 		return nil, nil
 	}
 
+	respData := map[string]interface{}{
+		"client_id": config.ClientID,
+	}
+	
+	if config.IdentitySecretsEnginePath != "" {
+		respData["identity_secrets_engine_path"] = config.IdentitySecretsEnginePath
+	}
+	if config.VaultAddr != "" {
+		respData["vault_addr"] = config.VaultAddr
+	}
+	if config.VaultNamespace != "" {
+		respData["vault_namespace"] = config.VaultNamespace
+	}
+	if config.VaultToken != "" {
+		respData["vault_token_set"] = true
+	}
+	
 	return &logical.Response{
-		Data: map[string]interface{}{
-			"client_id":          config.ClientID,
-			"userinfo_endpoint":  config.UserinfoEndpoint,
-		},
+		Data: respData,
 	}, nil
 }
 
@@ -102,7 +134,6 @@ func (b *oauthBackend) pathConfigRead(ctx context.Context, req *logical.Request,
 func (b *oauthBackend) pathConfigWrite(ctx context.Context, req *logical.Request, data *framework.FieldData) (*logical.Response, error) {
 	clientID := data.Get("client_id").(string)
 	clientSecret := data.Get("client_secret").(string)
-	userinfoEndpoint := data.Get("userinfo_endpoint").(string)
 
 	// Validate required fields
 	if clientID == "" {
@@ -111,14 +142,27 @@ func (b *oauthBackend) pathConfigWrite(ctx context.Context, req *logical.Request
 	if clientSecret == "" {
 		return logical.ErrorResponse("client_secret is required"), nil
 	}
-	if userinfoEndpoint == "" {
-		return logical.ErrorResponse("userinfo_endpoint is required"), nil
-	}
 
 	config := &oauthConfig{
-		ClientID:         clientID,
-		ClientSecret:     clientSecret,
-		UserinfoEndpoint: userinfoEndpoint,
+		ClientID:     clientID,
+		ClientSecret: clientSecret,
+	}
+	
+	// Set identity_secrets_engine_path with default value
+	if identityPath, ok := data.GetOk("identity_secrets_engine_path"); ok {
+		config.IdentitySecretsEnginePath = identityPath.(string)
+	} else {
+		config.IdentitySecretsEnginePath = "identity"
+	}
+	
+	if vaultAddr, ok := data.GetOk("vault_addr"); ok {
+		config.VaultAddr = vaultAddr.(string)
+	}
+	if vaultNamespace, ok := data.GetOk("vault_namespace"); ok {
+		config.VaultNamespace = vaultNamespace.(string)
+	}
+	if vaultToken, ok := data.GetOk("vault_token"); ok {
+		config.VaultToken = vaultToken.(string)
 	}
 
 	entry, err := logical.StorageEntryJSON(configStoragePath, config)
@@ -133,11 +177,7 @@ func (b *oauthBackend) pathConfigWrite(ctx context.Context, req *logical.Request
 	// Reset the client so it gets recreated with new config
 	b.reset()
 
-	return &logical.Response{
-		Data: map[string]interface{}{
-			"userinfo_endpoint": userinfoEndpoint,
-		},
-	}, nil
+	return nil, nil
 }
 
 // pathConfigDelete deletes the OAuth configuration
@@ -148,7 +188,11 @@ func (b *oauthBackend) pathConfigDelete(ctx context.Context, req *logical.Reques
 
 	b.reset()
 
-	return nil, nil
+	return &logical.Response{
+		Data: map[string]interface{}{
+			"client_id": data.Get("client_id").(string),
+		},
+	}, nil
 }
 
 // getConfig retrieves the OAuth configuration from storage
@@ -177,9 +221,14 @@ The OAuth Token Exchange backend requires configuration of an OAuth 2.0 / OIDC p
 You need to provide:
 - client_id: The OAuth 2.0 client ID
 - client_secret: The OAuth 2.0 client secret
-- userinfo_endpoint: The OIDC userinfo endpoint URL
 
-The userinfo_endpoint is used to verify subject tokens during the token exchange process.
+Optional Vault configuration for actor token verification:
+- identity_secrets_engine_path: Path to Vault identity secrets engine (default: 'identity')
+- vault_addr: Vault address for retrieving actor tokens
+- vault_namespace: Vault namespace (Vault Enterprise only)
+- vault_token: Vault token with access to the identity secrets engine
+
+Subject tokens are verified by decoding and validating the JWT.
 This secrets engine itself acts as the RFC 8693 token exchange endpoint.
 `
 
