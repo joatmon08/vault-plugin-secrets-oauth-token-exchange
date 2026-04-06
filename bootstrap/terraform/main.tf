@@ -45,6 +45,7 @@ resource "vault_approle_auth_backend_role" "client_agents" {
   for_each       = local.client_agents
   backend        = vault_auth_backend.approle.path
   role_name      = each.key
+  role_id        = each.key
   token_policies = [vault_policy.actor_token[each.key].name]
 }
 
@@ -109,9 +110,10 @@ resource "vault_identity_oidc_scope" "may_act" {
   name        = "may-act"
   template    = <<EOT
 {
-  "client_id": {{identity.entity.name}},
+  "client_id": "${vault_identity_oidc_client.client.client_id}",
   "may_act": {
-    "aud": ${jsonencode(keys(local.client_agents))}
+    "client_id": "test-client",
+    "sub": "${vault_identity_entity.client_agents["test-client"].id}"
   }
 }
 EOT
@@ -244,7 +246,7 @@ output "oidc_provider_issuer" {
 
 output "client_agent_vault_tokens" {
   value       = { for agent, attributes in vault_approle_auth_backend_login.client_agents : agent => attributes.client_token }
-  description = "Vault tokens for agents"
+  description = "AppRole secret ids for agents"
   sensitive   = true
 }
 

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/hashicorp/vault/api"
 	"github.com/hashicorp/vault/sdk/framework"
@@ -192,15 +193,53 @@ func (b *oauthBackend) verifySubjectToken(ctx context.Context, config *oauthConf
 	}
 
 	// Verify that the token has required claims
+	if _, ok := claims["iss"]; !ok {
+		return fmt.Errorf("JWT missing required 'iss' claim")
+	}
+
 	if _, ok := claims["sub"]; !ok {
 		return fmt.Errorf("JWT missing required 'sub' claim")
 	}
 
-	// Note: This is a basic validation. In production, you should also:
-	// - Verify the signature using the issuer's public key
-	// - Check the 'exp' (expiration) claim
-	// - Check the 'iss' (issuer) claim
-	// - Check the 'aud' (audience) claim if required
+	if _, ok := claims["client_id"]; !ok {
+		return fmt.Errorf("JWT missing required 'client_id' claim")
+	}
+
+	if _, ok := claims["aud"]; !ok {
+		return fmt.Errorf("JWT missing required 'aud' claim")
+	}
+
+	mayActMap, ok := claims["may_act"].(map[string]interface{})
+	if !ok {
+		return fmt.Errorf("JWT missing required 'may_act' claim")
+	}
+
+	if _, ok := mayActMap["client_id"]; !ok {
+		return fmt.Errorf("JWT missing required 'may_act' claim with 'client_id'")
+	}
+
+	if _, ok := mayActMap["sub"]; !ok {
+		return fmt.Errorf("JWT missing required 'may_act' claim with 'sub'")
+	}
+
+	// Check if the token has expired
+	if exp, ok := claims["exp"]; ok {
+		var expTime int64
+		switch v := exp.(type) {
+		case float64:
+			expTime = int64(v)
+		case int64:
+			expTime = v
+		case int:
+			expTime = int64(v)
+		default:
+			return fmt.Errorf("invalid 'exp' claim type: %T", exp)
+		}
+
+		if time.Now().Unix() > expTime {
+			return fmt.Errorf("JWT has expired")
+		}
+	}
 
 	return nil
 }
@@ -235,7 +274,7 @@ func (b *oauthBackend) verifyActorToken(ctx context.Context, req *logical.Reques
 	}
 
 	// Introspect the token to verify it's still active
-	// API: POST /identity/oidc/introspect
+	// API: POST /identity/oidc/introspect (PUT and POST are synonyms in Vault)
 	introspectPath := fmt.Sprintf("%s/oidc/introspect", config.IdentitySecretsEnginePath)
 	introspectData := map[string]interface{}{
 		"token":     actorToken,
