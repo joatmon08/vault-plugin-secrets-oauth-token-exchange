@@ -920,8 +920,9 @@ func TestPerformTokenExchange(t *testing.T) {
 
 			// Create a test role
 			role := &roleEntry{
-				Key: "test-key",
-				TTL: 1 * time.Hour,
+				Key:    "test-key",
+				Issuer: "http://127.0.0.1:8200/v1/identity/oidc",
+				TTL:    1 * time.Hour,
 			}
 
 			roleEntry, err := logical.StorageEntryJSON(roleStoragePrefix+"test-role", role)

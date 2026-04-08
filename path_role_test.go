@@ -20,12 +20,14 @@ func TestRole(t *testing.T) {
 			name: "valid role with all fields",
 			role: map[string]interface{}{
 				"key":     "test-key",
+				"issuer":  "http://127.0.0.1:8200/v1/identity/oidc",
 				"ttl":     3600,
 				"max_ttl": 86400,
 			},
 			expected: map[string]interface{}{
 				"name":    "test-role-all",
 				"key":     "test-key",
+				"issuer":  "http://127.0.0.1:8200/v1/identity/oidc",
 				"ttl":     int64(3600),
 				"max_ttl": int64(86400),
 			},
@@ -34,12 +36,14 @@ func TestRole(t *testing.T) {
 			name: "valid role with minimal fields",
 			role: map[string]interface{}{
 				"key":     "test-key",
+				"issuer":  "http://127.0.0.1:8200/v1/identity/oidc",
 				"ttl":     1800,
 				"max_ttl": 7200,
 			},
 			expected: map[string]interface{}{
 				"name":    "test-role-minimal",
 				"key":     "test-key",
+				"issuer":  "http://127.0.0.1:8200/v1/identity/oidc",
 				"ttl":     int64(1800),
 				"max_ttl": int64(7200),
 			},
@@ -47,11 +51,13 @@ func TestRole(t *testing.T) {
 		{
 			name: "valid role with default values",
 			role: map[string]interface{}{
-				"key": "test-key",
+				"key":    "test-key",
+				"issuer": "http://127.0.0.1:8200/v1/identity/oidc",
 			},
 			expected: map[string]interface{}{
 				"name":    "test-role-default",
 				"key":     "test-key",
+				"issuer":  "http://127.0.0.1:8200/v1/identity/oidc",
 				"ttl":     int64(3600),
 				"max_ttl": int64(86400),
 			},
@@ -60,6 +66,7 @@ func TestRole(t *testing.T) {
 			name: "invalid role - ttl greater than max_ttl",
 			role: map[string]interface{}{
 				"key":     "test-key",
+				"issuer":  "http://127.0.0.1:8200/v1/identity/oidc",
 				"ttl":     86400,
 				"max_ttl": 3600,
 			},
@@ -99,6 +106,7 @@ func TestRoleUpdate(t *testing.T) {
 	// Create initial role
 	role := map[string]interface{}{
 		"key":     "test-key",
+		"issuer":  "http://127.0.0.1:8200/v1/identity/oidc",
 		"ttl":     3600,
 		"max_ttl": 86400,
 	}
@@ -108,6 +116,7 @@ func TestRoleUpdate(t *testing.T) {
 	// Update ttl
 	roleUpdate := map[string]interface{}{
 		"key":     "test-key",
+		"issuer":  "http://127.0.0.1:8200/v1/identity/oidc",
 		"ttl":     7200,
 		"max_ttl": 86400,
 	}
@@ -118,6 +127,7 @@ func TestRoleUpdate(t *testing.T) {
 	expected := map[string]interface{}{
 		"name":    "test-role",
 		"key":     "test-key",
+		"issuer":  "http://127.0.0.1:8200/v1/identity/oidc",
 		"ttl":     int64(7200),
 		"max_ttl": int64(86400),
 	}
@@ -134,6 +144,7 @@ func TestRoleDelete(t *testing.T) {
 	// Create valid role
 	role := map[string]interface{}{
 		"key":     "test-key",
+		"issuer":  "http://127.0.0.1:8200/v1/identity/oidc",
 		"ttl":     3600,
 		"max_ttl": 86400,
 	}
@@ -182,6 +193,7 @@ func TestRoleList(t *testing.T) {
 	for _, roleName := range roles {
 		role := map[string]interface{}{
 			"key":     "test-key",
+			"issuer":  "http://127.0.0.1:8200/v1/identity/oidc",
 			"ttl":     3600,
 			"max_ttl": 86400,
 		}
@@ -212,6 +224,7 @@ func TestRoleExistenceCheck(t *testing.T) {
 	// Create a role
 	role := map[string]interface{}{
 		"key":     "test-key",
+		"issuer":  "http://127.0.0.1:8200/v1/identity/oidc",
 		"ttl":     3600,
 		"max_ttl": 86400,
 	}
@@ -256,7 +269,8 @@ func TestRoleDefaultValues(t *testing.T) {
 
 	// Create role without specifying TTL values
 	role := map[string]interface{}{
-		"key": "test-key",
+		"key":    "test-key",
+		"issuer": "http://127.0.0.1:8200/v1/identity/oidc",
 	}
 
 	testRoleCreate(t, b, s, "test-role", role, false)
@@ -282,6 +296,7 @@ func TestRoleWithNonExistentKey(t *testing.T) {
 	// Try to create role with non-existent key
 	role := map[string]interface{}{
 		"key":     "non-existent-key",
+		"issuer":  "http://127.0.0.1:8200/v1/identity/oidc",
 		"ttl":     3600,
 		"max_ttl": 86400,
 	}

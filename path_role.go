@@ -17,6 +17,7 @@ const (
 type roleEntry struct {
 	Name   string        `json:"name"`
 	Key    string        `json:"key"`
+	Issuer string        `json:"issuer"`
 	TTL    time.Duration `json:"ttl"`
 	MaxTTL time.Duration `json:"max_ttl"`
 }
@@ -26,6 +27,7 @@ func (r *roleEntry) toResponseData() map[string]interface{} {
 	return map[string]interface{}{
 		"name":    r.Name,
 		"key":     r.Key,
+		"issuer":  r.Issuer,
 		"ttl":     int64(r.TTL.Seconds()),
 		"max_ttl": int64(r.MaxTTL.Seconds()),
 	}
@@ -45,6 +47,11 @@ func pathRole(b *oauthBackend) []*framework.Path {
 				"key": {
 					Type:        framework.TypeString,
 					Description: "Name of the signing key to use for this role",
+					Required:    true,
+				},
+				"issuer": {
+					Type:        framework.TypeString,
+					Description: "Issuer (iss) claim for tokens issued by this role",
 					Required:    true,
 				},
 				"ttl": {
@@ -142,6 +149,11 @@ func (b *oauthBackend) pathRoleWrite(ctx context.Context, req *logical.Request, 
 		return logical.ErrorResponse("missing key name"), nil
 	}
 
+	issuer := data.Get("issuer").(string)
+	if issuer == "" {
+		return logical.ErrorResponse("missing issuer"), nil
+	}
+
 	// Verify the key exists
 	keyEntry, err := req.Storage.Get(ctx, keyStoragePath+keyName)
 	if err != nil {
@@ -154,6 +166,7 @@ func (b *oauthBackend) pathRoleWrite(ctx context.Context, req *logical.Request, 
 	role := &roleEntry{
 		Name:   roleName,
 		Key:    keyName,
+		Issuer: issuer,
 		TTL:    time.Duration(data.Get("ttl").(int)) * time.Second,
 		MaxTTL: time.Duration(data.Get("max_ttl").(int)) * time.Second,
 	}

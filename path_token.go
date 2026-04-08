@@ -261,8 +261,8 @@ func (b *oauthBackend) performTokenExchange(ctx context.Context, req *logical.Re
 	// Generate the access token
 	now := time.Now()
 	token := &accessToken{
-		Issuer:   config.ClientID, // Use client_id as issuer
-		Subject:  subjectTokenClaims.Subject,
+		Issuer:   role.Issuer,
+		Subject:  actorTokenClaims.Subject,
 		Audience: audience,
 		Expiry:   now.Add(expiry).Unix(),
 		IssuedAt: now.Unix(),
