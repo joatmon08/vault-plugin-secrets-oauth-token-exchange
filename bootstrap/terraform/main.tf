@@ -89,21 +89,21 @@ resource "vault_identity_oidc_role" "client_agents" {
 # of the Vault OIDC token endpoint.
 # The subject token has the following format.
 # {
-#   "at_hash": "6KWjQ3hYifa5e5qw1qzIow",
-#   "aud": "pZTfZRna11PNtJw3zcWIlPmR0ffAIr4Q",
-#   "c_hash": "I5YtF3bXk3LtiUd0y6kGSg",
-#   "client_id": "end-user",
-#   "exp": 1775241406,
-#   "iat": 1775239006,
+#   "at_hash": "BGmDr0enjSbqqM4kJhYzwA",
+#   "aud": "lF7iYit6FaxpfyOMICqJLzDrQsCYQYsZ",
+#   "c_hash": "34dQRIgGok7kGZpb-AHRlw",
+#   "client_id": "lF7iYit6FaxpfyOMICqJLzDrQsCYQYsZ",
+#   "exp": 1775503463,
+#   "iat": 1775501063,
 #   "iss": "http://localhost:8200/v1/identity/oidc/provider/test",
-#   "may_act": {
-#     "aud": [
-#       "second-client",
-#       "test-client"
-#     ]
-#   },
+#   "may_act": [
+#     {
+#       "client_id": "test-client",
+#       "sub": "52b1da4c-0a60-f23a-3384-1d5837af487e"
+#     }
+#   ],
 #   "namespace": "root",
-#   "sub": "613d7d98-5468-4738-3188-e981026a588d"
+#   "sub": "064a698a-4133-7443-b89d-aecd885aa3ee"
 # }
 
 resource "vault_identity_oidc_scope" "may_act" {
@@ -111,10 +111,10 @@ resource "vault_identity_oidc_scope" "may_act" {
   template    = <<EOT
 {
   "client_id": "${vault_identity_oidc_client.client.client_id}",
-  "may_act": {
+  "may_act": [{
     "client_id": "test-client",
     "sub": "${vault_identity_entity.client_agents["test-client"].id}"
-  }
+  }]
 }
 EOT
   description = "May act claim that includes what agents can act on behalf of user"

@@ -44,6 +44,7 @@ func backend() *oauthBackend {
 		Paths: framework.PathAppend(
 			pathConfig(&b),
 			pathRole(&b),
+			pathKey(&b),
 			pathToken(&b),
 		),
 		Secrets:     []*framework.Secret{},

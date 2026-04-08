@@ -19,11 +19,13 @@ func TestRole(t *testing.T) {
 		{
 			name: "valid role with all fields",
 			role: map[string]interface{}{
+				"key":     "test-key",
 				"ttl":     3600,
 				"max_ttl": 86400,
 			},
 			expected: map[string]interface{}{
 				"name":    "test-role-all",
+				"key":     "test-key",
 				"ttl":     int64(3600),
 				"max_ttl": int64(86400),
 			},
@@ -31,20 +33,25 @@ func TestRole(t *testing.T) {
 		{
 			name: "valid role with minimal fields",
 			role: map[string]interface{}{
+				"key":     "test-key",
 				"ttl":     1800,
 				"max_ttl": 7200,
 			},
 			expected: map[string]interface{}{
 				"name":    "test-role-minimal",
+				"key":     "test-key",
 				"ttl":     int64(1800),
 				"max_ttl": int64(7200),
 			},
 		},
 		{
 			name: "valid role with default values",
-			role: map[string]interface{}{},
+			role: map[string]interface{}{
+				"key": "test-key",
+			},
 			expected: map[string]interface{}{
 				"name":    "test-role-default",
+				"key":     "test-key",
 				"ttl":     int64(3600),
 				"max_ttl": int64(86400),
 			},
@@ -52,6 +59,7 @@ func TestRole(t *testing.T) {
 		{
 			name: "invalid role - ttl greater than max_ttl",
 			role: map[string]interface{}{
+				"key":     "test-key",
 				"ttl":     86400,
 				"max_ttl": 3600,
 			},
@@ -62,6 +70,9 @@ func TestRole(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			b, s := getTestBackend(t)
+			
+			// Create a test key first
+			createTestKey(t, b, s, "test-key")
 			
 			var roleName string
 			if tc.wantErr {
@@ -82,8 +93,12 @@ func TestRole(t *testing.T) {
 func TestRoleUpdate(t *testing.T) {
 	b, s := getTestBackend(t)
 
+	// Create a test key first
+	createTestKey(t, b, s, "test-key")
+
 	// Create initial role
 	role := map[string]interface{}{
+		"key":     "test-key",
 		"ttl":     3600,
 		"max_ttl": 86400,
 	}
@@ -92,6 +107,7 @@ func TestRoleUpdate(t *testing.T) {
 
 	// Update ttl
 	roleUpdate := map[string]interface{}{
+		"key":     "test-key",
 		"ttl":     7200,
 		"max_ttl": 86400,
 	}
@@ -101,6 +117,7 @@ func TestRoleUpdate(t *testing.T) {
 	// Verify update
 	expected := map[string]interface{}{
 		"name":    "test-role",
+		"key":     "test-key",
 		"ttl":     int64(7200),
 		"max_ttl": int64(86400),
 	}
@@ -111,8 +128,12 @@ func TestRoleUpdate(t *testing.T) {
 func TestRoleDelete(t *testing.T) {
 	b, s := getTestBackend(t)
 
+	// Create a test key first
+	createTestKey(t, b, s, "test-key")
+
 	// Create valid role
 	role := map[string]interface{}{
+		"key":     "test-key",
 		"ttl":     3600,
 		"max_ttl": 86400,
 	}
@@ -153,10 +174,14 @@ func TestRoleDelete(t *testing.T) {
 func TestRoleList(t *testing.T) {
 	b, s := getTestBackend(t)
 
+	// Create a test key first
+	createTestKey(t, b, s, "test-key")
+
 	// Create multiple roles
 	roles := []string{"role1", "role2", "role3"}
 	for _, roleName := range roles {
 		role := map[string]interface{}{
+			"key":     "test-key",
 			"ttl":     3600,
 			"max_ttl": 86400,
 		}
@@ -181,8 +206,12 @@ func TestRoleList(t *testing.T) {
 func TestRoleExistenceCheck(t *testing.T) {
 	b, s := getTestBackend(t)
 
+	// Create a test key first
+	createTestKey(t, b, s, "test-key")
+
 	// Create a role
 	role := map[string]interface{}{
+		"key":     "test-key",
 		"ttl":     3600,
 		"max_ttl": 86400,
 	}
@@ -222,8 +251,13 @@ func TestRoleExistenceCheck(t *testing.T) {
 func TestRoleDefaultValues(t *testing.T) {
 	b, s := getTestBackend(t)
 
+	// Create a test key first
+	createTestKey(t, b, s, "test-key")
+
 	// Create role without specifying TTL values
-	role := map[string]interface{}{}
+	role := map[string]interface{}{
+		"key": "test-key",
+	}
 
 	testRoleCreate(t, b, s, "test-role", role, false)
 
@@ -240,6 +274,29 @@ func TestRoleDefaultValues(t *testing.T) {
 	// Verify default TTL values
 	assert.Equal(t, int64(3600), resp.Data["ttl"])
 	assert.Equal(t, int64(86400), resp.Data["max_ttl"])
+}
+
+func TestRoleWithNonExistentKey(t *testing.T) {
+	b, s := getTestBackend(t)
+
+	// Try to create role with non-existent key
+	role := map[string]interface{}{
+		"key":     "non-existent-key",
+		"ttl":     3600,
+		"max_ttl": 86400,
+	}
+
+	resp, err := b.HandleRequest(context.Background(), &logical.Request{
+		Operation: logical.CreateOperation,
+		Path:      "role/test-role",
+		Data:      role,
+		Storage:   s,
+	})
+
+	assert.NoError(t, err)
+	assert.NotNil(t, resp)
+	assert.True(t, resp.IsError())
+	assert.Contains(t, resp.Error().Error(), "does not exist")
 }
 
 func testRoleCreate(t *testing.T, b logical.Backend, s logical.Storage, name string, d map[string]interface{}, wantErr bool) {
@@ -298,6 +355,28 @@ func testRoleRead(t *testing.T, b logical.Backend, s logical.Storage, name strin
 		}
 
 		assert.Equal(t, expectedValue, actualValue, "value mismatch for key %s", key)
+	}
+}
+
+// createTestKey is a helper function to create a test signing key
+func createTestKey(t *testing.T, b logical.Backend, s logical.Storage, name string) {
+	t.Helper()
+	
+	resp, err := b.HandleRequest(context.Background(), &logical.Request{
+		Operation: logical.CreateOperation,
+		Path:      "key/" + name,
+		Data: map[string]interface{}{
+			"algorithm": "RS256",
+		},
+		Storage: s,
+	})
+	
+	if err != nil {
+		t.Fatal(err)
+	}
+	
+	if resp != nil && resp.IsError() {
+		t.Fatal(resp.Error())
 	}
 }
 

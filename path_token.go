@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/hashicorp/vault/api"
 	"github.com/hashicorp/vault/sdk/framework"
 	"github.com/hashicorp/vault/sdk/logical"
@@ -18,6 +19,17 @@ const (
 	grantTypeTokenExchange = "urn:ietf:params:oauth:grant-type:token-exchange"
 	tokenTypeAccessToken   = "urn:ietf:params:oauth:token-type:access_token"
 )
+
+type mayActClaim struct {
+	ClientID string `json:"client_id"`
+	Subject  string `json:"sub"`
+}
+
+type actorClaims struct {
+	ClientID string                 `json:"client_id"`
+	Subject  string                 `json:"sub"`
+	Actors   map[string]interface{} `json:"act"`
+}
 
 // pathToken extends the Vault API with token exchange endpoints
 func pathToken(b *oauthBackend) []*framework.Path {
@@ -42,7 +54,7 @@ func pathToken(b *oauthBackend) []*framework.Path {
 				},
 				"client_id": {
 					Type:        framework.TypeString,
-					Description: "OAuth 2.0 client ID",
+					Description: "OAuth 2.0 client ID that requests the token",
 				},
 				"audience": {
 					Type:        framework.TypeString,
@@ -136,27 +148,58 @@ func (b *oauthBackend) pathTokenExchange(ctx context.Context, req *logical.Reque
 	}, nil
 }
 
+type AccessTokenClaims struct {
+	Signature string                 `json:"sig"`
+	Actors    map[string]interface{} `json:"act"`
+	jwt.RegisteredClaims
+}
+
+func buildAccessToken(actorToken *actorClaims) string {
+	signature := "todo"
+	actors := map[string]interface{}{
+		"client_id": actorToken.ClientID,
+		"subject":   actorToken.Subject,
+		"act":       actorToken.Actors,
+	}
+	_ = AccessTokenClaims{
+		Signature: signature,
+		Actors:    actors,
+		RegisteredClaims: jwt.RegisteredClaims{
+			ExpiresAt: jwt.NewNumericDate(time.Now().Add(24 * time.Hour)),
+			IssuedAt:  jwt.NewNumericDate(time.Now()),
+			Issuer:    "test-project",
+		},
+	}
+	return "token"
+}
+
 // performTokenExchange executes the RFC 8693 token exchange
 // This secrets engine itself acts as the token exchange endpoint
 func (b *oauthBackend) performTokenExchange(ctx context.Context, config *oauthConfig, role *roleEntry, subjectToken, actorToken, grantType, clientID, audience, scope string) (map[string]interface{}, error) {
-	// Verify the subject token against the userinfo endpoint
-	if err := b.verifySubjectToken(ctx, config, subjectToken); err != nil {
+	subjectTokenMayActClaim, err := b.verifySubjectToken(ctx, config, subjectToken)
+	if err != nil {
 		return nil, fmt.Errorf("subject token verification failed: %w", err)
 	}
 
+	actorTokenClaims, err := b.decodeActorToken(actorToken)
+	if err != nil {
+		return nil, fmt.Errorf("actor token decoding failed: %w", err)
+	}
+
+	if subjectTokenMayActClaim.ClientID == actorTokenClaims.ClientID && subjectTokenMayActClaim.Subject == actorTokenClaims.Subject {
+		return nil, fmt.Errorf("actor token does not have permission to act on behalf of subject token")
+	}
+
+	accessToken := buildAccessToken(actorTokenClaims)
+
 	// Build the token response according to RFC 8693
 	tokenResponse := map[string]interface{}{
-		"access_token":      subjectToken,
+		"access_token":      accessToken,
 		"issued_token_type": tokenTypeAccessToken,
 		"token_type":        "Bearer",
 		"grant_type":        grantType,
-		"client_id":         clientID,
 	}
 
-	// Add optional fields if present
-	if actorToken != "" {
-		tokenResponse["actor_token"] = actorToken
-	}
 	if audience != "" {
 		tokenResponse["audience"] = audience
 	}
@@ -172,54 +215,40 @@ func (b *oauthBackend) performTokenExchange(ctx context.Context, config *oauthCo
 	return tokenResponse, nil
 }
 
-// verifySubjectToken verifies the subject token by decoding the JWT
-func (b *oauthBackend) verifySubjectToken(ctx context.Context, config *oauthConfig, token string) error {
+func decodeToken(token string) (map[string]interface{}, error) {
 	// Split the JWT into its three parts
 	parts := strings.Split(token, ".")
 	if len(parts) != 3 {
-		return fmt.Errorf("invalid JWT format: expected 3 parts, got %d", len(parts))
+		return nil, fmt.Errorf("invalid JWT format: expected 3 parts, got %d", len(parts))
 	}
 
 	// Decode the payload (second part)
 	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
 	if err != nil {
-		return fmt.Errorf("failed to decode JWT payload: %w", err)
+		return nil, fmt.Errorf("failed to decode JWT payload: %w", err)
 	}
 
 	// Parse the payload as JSON to verify it's valid
 	var claims map[string]interface{}
 	if err := json.Unmarshal(payload, &claims); err != nil {
-		return fmt.Errorf("failed to parse JWT claims: %w", err)
+		return nil, fmt.Errorf("failed to parse JWT claims: %w", err)
 	}
 
 	// Verify that the token has required claims
 	if _, ok := claims["iss"]; !ok {
-		return fmt.Errorf("JWT missing required 'iss' claim")
+		return nil, fmt.Errorf("JWT missing required 'iss' claim")
 	}
 
 	if _, ok := claims["sub"]; !ok {
-		return fmt.Errorf("JWT missing required 'sub' claim")
+		return nil, fmt.Errorf("JWT missing required 'sub' claim")
 	}
 
 	if _, ok := claims["client_id"]; !ok {
-		return fmt.Errorf("JWT missing required 'client_id' claim")
+		return nil, fmt.Errorf("JWT missing required 'client_id' claim")
 	}
 
 	if _, ok := claims["aud"]; !ok {
-		return fmt.Errorf("JWT missing required 'aud' claim")
-	}
-
-	mayActMap, ok := claims["may_act"].(map[string]interface{})
-	if !ok {
-		return fmt.Errorf("JWT missing required 'may_act' claim")
-	}
-
-	if _, ok := mayActMap["client_id"]; !ok {
-		return fmt.Errorf("JWT missing required 'may_act' claim with 'client_id'")
-	}
-
-	if _, ok := mayActMap["sub"]; !ok {
-		return fmt.Errorf("JWT missing required 'may_act' claim with 'sub'")
+		return nil, fmt.Errorf("JWT missing required 'aud' claim")
 	}
 
 	// Check if the token has expired
@@ -233,15 +262,64 @@ func (b *oauthBackend) verifySubjectToken(ctx context.Context, config *oauthConf
 		case int:
 			expTime = int64(v)
 		default:
-			return fmt.Errorf("invalid 'exp' claim type: %T", exp)
+			return nil, fmt.Errorf("invalid 'exp' claim type: %T", exp)
 		}
 
 		if time.Now().Unix() > expTime {
-			return fmt.Errorf("JWT has expired")
+			return nil, fmt.Errorf("JWT has expired")
 		}
 	}
 
-	return nil
+	return claims, nil
+}
+
+func (b *oauthBackend) decodeActorToken(token string) (*actorClaims, error) {
+	claims, err := decodeToken(token)
+	if err != nil {
+		return nil, err
+	}
+
+	clientID, _ := claims["client_id"]
+	subject, _ := claims["sub"]
+
+	claim := &actorClaims{
+		Subject:  subject.(string),
+		ClientID: clientID.(string),
+	}
+
+	if actors, ok := claims["actors"]; ok {
+		claim.Actors = actors.(map[string]interface{})
+	}
+
+	return claim, nil
+}
+
+// verifySubjectToken verifies the subject token by decoding the JWT
+func (b *oauthBackend) verifySubjectToken(ctx context.Context, config *oauthConfig, token string) (*mayActClaim, error) {
+	claims, err := decodeToken(token)
+	if err != nil {
+		return nil, err
+	}
+
+	mayActMap, ok := claims["may_act"].(map[string]interface{})
+	if !ok {
+		return nil, fmt.Errorf("JWT missing required 'may_act' claim")
+	}
+
+	if _, ok := mayActMap["client_id"]; !ok {
+		return nil, fmt.Errorf("JWT missing required 'may_act' claim with 'client_id'")
+	}
+
+	if _, ok := mayActMap["sub"]; !ok {
+		return nil, fmt.Errorf("JWT missing required 'may_act' claim with 'sub'")
+	}
+
+	claim := &mayActClaim{
+		ClientID: mayActMap["client_id"].(string),
+		Subject:  mayActMap["sub"].(string),
+	}
+
+	return claim, nil
 }
 
 // verifyActorToken introspects an actor token to verify it's still active

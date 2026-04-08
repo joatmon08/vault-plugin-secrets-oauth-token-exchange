@@ -20,6 +20,256 @@ func createJWTWithClaims(claims map[string]interface{}) string {
 }
 
 func TestVerifySubjectToken(t *testing.T) {
+	tests := []struct {
+		name    string
+		token   string
+		wantErr bool
+		errMsg  string
+	}{
+		{
+			name: "missing may_act claim",
+			token: createJWTWithClaims(map[string]interface{}{
+				"iss":       "test-issuer",
+				"sub":       "user123",
+				"aud":       "test",
+				"client_id": "test-client",
+			}),
+			wantErr: true,
+			errMsg:  "JWT missing required 'may_act' claim",
+		},
+		{
+			name: "may_act missing client_id",
+			token: createJWTWithClaims(map[string]interface{}{
+				"iss":       "test-issuer",
+				"sub":       "user123",
+				"aud":       "test",
+				"client_id": "test-client",
+				"may_act":   map[string]interface{}{"sub": "actor-sub"},
+			}),
+			wantErr: true,
+			errMsg:  "JWT missing required 'may_act' claim with 'client_id'",
+		},
+		{
+			name: "may_act missing sub",
+			token: createJWTWithClaims(map[string]interface{}{
+				"iss":       "test-issuer",
+				"sub":       "user123",
+				"aud":       "test",
+				"client_id": "test-client",
+				"may_act":   map[string]interface{}{"client_id": "actor"},
+			}),
+			wantErr: true,
+			errMsg:  "JWT missing required 'may_act' claim with 'sub'",
+		},
+		{
+			name: "valid JWT with may_act claim",
+			token: createJWTWithClaims(map[string]interface{}{
+				"iss":       "test-issuer",
+				"sub":       "user123",
+				"aud":       "test",
+				"client_id": "test-client",
+				"may_act":   map[string]interface{}{"client_id": "actor", "sub": "actor-sub"},
+			}),
+			wantErr: false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			b, _ := getTestBackend(t)
+			backend := b.(*oauthBackend)
+
+			config := &oauthConfig{
+				ClientID:     "test-client",
+				ClientSecret: "test-secret",
+			}
+
+			mayAct, err := backend.verifySubjectToken(context.Background(), config, tc.token)
+
+			if tc.wantErr {
+				require.Error(t, err)
+				assert.Nil(t, mayAct)
+				if tc.errMsg != "" {
+					assert.Contains(t, err.Error(), tc.errMsg)
+				}
+			} else {
+				assert.NoError(t, err)
+				require.NotNil(t, mayAct)
+				assert.Equal(t, "actor", mayAct.ClientID)
+				assert.Equal(t, "actor-sub", mayAct.Subject)
+			}
+		})
+	}
+}
+
+func TestVerifyActorToken(t *testing.T) {
+	tests := []struct {
+		name           string
+		config         *oauthConfig
+		actorToken     string
+		clientID       string
+		mockResponse   map[string]interface{}
+		mockStatusCode int
+		wantErr        bool
+		errMsg         string
+	}{
+		{
+			name: "valid active token",
+			config: &oauthConfig{
+				VaultAddr:                 "", // Will be set to mock server URL
+				VaultToken:                "test-token",
+				IdentitySecretsEnginePath: "identity",
+			},
+			actorToken: "valid-actor-token",
+			clientID:   "test-client",
+			mockResponse: map[string]interface{}{
+				"active": true,
+			},
+			mockStatusCode: http.StatusOK,
+			wantErr:        false,
+		},
+		{
+			name: "inactive token",
+			config: &oauthConfig{
+				VaultAddr:                 "", // Will be set to mock server URL
+				VaultToken:                "test-token",
+				IdentitySecretsEnginePath: "identity",
+			},
+			actorToken: "inactive-actor-token",
+			clientID:   "test-client",
+			mockResponse: map[string]interface{}{
+				"active": false,
+			},
+			mockStatusCode: http.StatusOK,
+			wantErr:        true,
+			errMsg:         "actor token is not active",
+		},
+		{
+			name: "missing vault_token",
+			config: &oauthConfig{
+				VaultAddr:                 "http://localhost:8200",
+				VaultToken:                "",
+				IdentitySecretsEnginePath: "identity",
+			},
+			actorToken: "test-token",
+			clientID:   "test-client",
+			wantErr:    true,
+			errMsg:     "vault_token not configured",
+		},
+		{
+			name: "missing vault_addr",
+			config: &oauthConfig{
+				VaultAddr:                 "",
+				VaultToken:                "test-token",
+				IdentitySecretsEnginePath: "identity",
+			},
+			actorToken: "test-token",
+			clientID:   "test-client",
+			wantErr:    true,
+			errMsg:     "vault_addr not configured",
+		},
+		{
+			name: "missing identity_secrets_engine_path",
+			config: &oauthConfig{
+				VaultAddr:                 "http://localhost:8200",
+				VaultToken:                "test-token",
+				IdentitySecretsEnginePath: "",
+			},
+			actorToken: "test-token",
+			clientID:   "test-client",
+			wantErr:    true,
+			errMsg:     "identity_secrets_engine_path not configured",
+		},
+		{
+			name: "missing active field in response",
+			config: &oauthConfig{
+				VaultAddr:                 "", // Will be set to mock server URL
+				VaultToken:                "test-token",
+				IdentitySecretsEnginePath: "identity",
+			},
+			actorToken: "test-token",
+			clientID:   "test-client",
+			mockResponse: map[string]interface{}{
+				"some_other_field": "value",
+			},
+			mockStatusCode: http.StatusOK,
+			wantErr:        true,
+			errMsg:         "missing 'active' field",
+		},
+		{
+			name: "with vault namespace",
+			config: &oauthConfig{
+				VaultAddr:                 "", // Will be set to mock server URL
+				VaultToken:                "test-token",
+				VaultNamespace:            "test-namespace",
+				IdentitySecretsEnginePath: "identity",
+			},
+			actorToken: "valid-actor-token",
+			clientID:   "test-client",
+			mockResponse: map[string]interface{}{
+				"active": true,
+			},
+			mockStatusCode: http.StatusOK,
+			wantErr:        false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			// Create mock HTTP server if we need to test API calls
+			var mockServer *httptest.Server
+			if tc.mockResponse != nil {
+				mockServer = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					// Verify the request (Vault client uses PUT for Write operations)
+					assert.Equal(t, "PUT", r.Method)
+					assert.Contains(t, r.URL.Path, "/identity/oidc/introspect")
+
+					// Check for namespace header if configured
+					if tc.config.VaultNamespace != "" {
+						assert.Equal(t, tc.config.VaultNamespace, r.Header.Get("X-Vault-Namespace"))
+					}
+
+					// Check for token header
+					assert.Equal(t, tc.config.VaultToken, r.Header.Get("X-Vault-Token"))
+
+					// Return mock response
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(tc.mockStatusCode)
+
+					response := map[string]interface{}{
+						"data": tc.mockResponse,
+					}
+					json.NewEncoder(w).Encode(response)
+				}))
+				defer mockServer.Close()
+
+				// Set the mock server URL
+				tc.config.VaultAddr = mockServer.URL
+			}
+
+			// Create backend
+			b, _ := getTestBackend(t)
+			backend := b.(*oauthBackend)
+
+			// Create a mock request
+			req := &logical.Request{}
+
+			// Call verifyActorToken
+			err := backend.verifyActorToken(context.Background(), req, tc.config, tc.actorToken, tc.clientID)
+
+			// Check results
+			if tc.wantErr {
+				require.Error(t, err)
+				if tc.errMsg != "" {
+					assert.Contains(t, err.Error(), tc.errMsg)
+				}
+			} else {
+				assert.NoError(t, err)
+			}
+		})
+	}
+}
+func TestDecodeToken(t *testing.T) {
 	futureTime := time.Now().Add(24 * time.Hour).Unix()
 	pastTime := time.Now().Add(-24 * time.Hour).Unix()
 
@@ -59,7 +309,6 @@ func TestVerifySubjectToken(t *testing.T) {
 				"sub":       "user123",
 				"aud":       "test",
 				"client_id": "test-client",
-				"may_act":   map[string]interface{}{"client_id": "actor", "sub": "actor-sub"},
 			}),
 			wantErr: true,
 			errMsg:  "JWT missing required 'iss' claim",
@@ -70,7 +319,6 @@ func TestVerifySubjectToken(t *testing.T) {
 				"iss":       "test-issuer",
 				"aud":       "test",
 				"client_id": "test-client",
-				"may_act":   map[string]interface{}{"client_id": "actor", "sub": "actor-sub"},
 			}),
 			wantErr: true,
 			errMsg:  "JWT missing required 'sub' claim",
@@ -78,10 +326,9 @@ func TestVerifySubjectToken(t *testing.T) {
 		{
 			name: "invalid JWT - missing client_id claim",
 			token: createJWTWithClaims(map[string]interface{}{
-				"iss":     "test-issuer",
-				"sub":     "user123",
-				"aud":     "test",
-				"may_act": map[string]interface{}{"client_id": "actor", "sub": "actor-sub"},
+				"iss": "test-issuer",
+				"sub": "user123",
+				"aud": "test",
 			}),
 			wantErr: true,
 			errMsg:  "JWT missing required 'client_id' claim",
@@ -92,45 +339,9 @@ func TestVerifySubjectToken(t *testing.T) {
 				"iss":       "test-issuer",
 				"sub":       "user123",
 				"client_id": "test-client",
-				"may_act":   map[string]interface{}{"client_id": "actor", "sub": "actor-sub"},
 			}),
 			wantErr: true,
 			errMsg:  "JWT missing required 'aud' claim",
-		},
-		{
-			name: "invalid JWT - missing may_act claim",
-			token: createJWTWithClaims(map[string]interface{}{
-				"iss":       "test-issuer",
-				"sub":       "user123",
-				"aud":       "test",
-				"client_id": "test-client",
-			}),
-			wantErr: true,
-			errMsg:  "JWT missing required 'may_act' claim",
-		},
-		{
-			name: "invalid JWT - may_act missing client_id",
-			token: createJWTWithClaims(map[string]interface{}{
-				"iss":       "test-issuer",
-				"sub":       "user123",
-				"aud":       "test",
-				"client_id": "test-client",
-				"may_act":   map[string]interface{}{"sub": "actor-sub"},
-			}),
-			wantErr: true,
-			errMsg:  "JWT missing required 'may_act' claim with 'client_id'",
-		},
-		{
-			name: "invalid JWT - may_act missing sub",
-			token: createJWTWithClaims(map[string]interface{}{
-				"iss":       "test-issuer",
-				"sub":       "user123",
-				"aud":       "test",
-				"client_id": "test-client",
-				"may_act":   map[string]interface{}{"client_id": "actor"},
-			}),
-			wantErr: true,
-			errMsg:  "JWT missing required 'may_act' claim with 'sub'",
 		},
 		{
 			name: "invalid JWT - expired token",
@@ -139,7 +350,6 @@ func TestVerifySubjectToken(t *testing.T) {
 				"sub":       "user123",
 				"aud":       "test",
 				"client_id": "test-client",
-				"may_act":   map[string]interface{}{"client_id": "actor", "sub": "actor-sub"},
 				"exp":       pastTime,
 			}),
 			wantErr: true,
@@ -152,7 +362,6 @@ func TestVerifySubjectToken(t *testing.T) {
 				"sub":       "user123",
 				"aud":       "test",
 				"client_id": "test-client",
-				"may_act":   map[string]interface{}{"client_id": "actor", "sub": "actor-sub"},
 				"exp":       futureTime,
 			}),
 			wantErr: false,
@@ -164,7 +373,6 @@ func TestVerifySubjectToken(t *testing.T) {
 				"sub":       "user123",
 				"aud":       "test",
 				"client_id": "test-client",
-				"may_act":   map[string]interface{}{"client_id": "actor", "sub": "actor-sub"},
 			}),
 			wantErr: false,
 		},
@@ -172,194 +380,26 @@ func TestVerifySubjectToken(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			b, _ := getTestBackend(t)
-			backend := b.(*oauthBackend)
-
-			config := &oauthConfig{
-				ClientID:     "test-client",
-				ClientSecret: "test-secret",
-			}
-
-			err := backend.verifySubjectToken(context.Background(), config, tc.token)
+			claims, err := decodeToken(tc.token)
 
 			if tc.wantErr {
 				require.Error(t, err)
+				assert.Nil(t, claims)
 				if tc.errMsg != "" {
 					assert.Contains(t, err.Error(), tc.errMsg)
 				}
 			} else {
-				assert.NoError(t, err)
+				require.NoError(t, err)
+				require.NotNil(t, claims)
+				// Verify required claims are present
+				assert.Contains(t, claims, "iss")
+				assert.Contains(t, claims, "sub")
+				assert.Contains(t, claims, "client_id")
+				assert.Contains(t, claims, "aud")
 			}
 		})
 	}
 }
 
-func TestVerifyActorToken(t *testing.T) {
-	tests := []struct {
-		name           string
-		config         *oauthConfig
-		actorToken     string
-		clientID       string
-		mockResponse   map[string]interface{}
-		mockStatusCode int
-		wantErr        bool
-		errMsg         string
-	}{
-		{
-			name: "valid active token",
-			config: &oauthConfig{
-				VaultAddr:                  "", // Will be set to mock server URL
-				VaultToken:                 "test-token",
-				IdentitySecretsEnginePath:  "identity",
-			},
-			actorToken: "valid-actor-token",
-			clientID:   "test-client",
-			mockResponse: map[string]interface{}{
-				"active": true,
-			},
-			mockStatusCode: http.StatusOK,
-			wantErr:        false,
-		},
-		{
-			name: "inactive token",
-			config: &oauthConfig{
-				VaultAddr:                  "", // Will be set to mock server URL
-				VaultToken:                 "test-token",
-				IdentitySecretsEnginePath:  "identity",
-			},
-			actorToken: "inactive-actor-token",
-			clientID:   "test-client",
-			mockResponse: map[string]interface{}{
-				"active": false,
-			},
-			mockStatusCode: http.StatusOK,
-			wantErr:        true,
-			errMsg:         "actor token is not active",
-		},
-		{
-			name: "missing vault_token",
-			config: &oauthConfig{
-				VaultAddr:                  "http://localhost:8200",
-				VaultToken:                 "",
-				IdentitySecretsEnginePath:  "identity",
-			},
-			actorToken: "test-token",
-			clientID:   "test-client",
-			wantErr:    true,
-			errMsg:     "vault_token not configured",
-		},
-		{
-			name: "missing vault_addr",
-			config: &oauthConfig{
-				VaultAddr:                  "",
-				VaultToken:                 "test-token",
-				IdentitySecretsEnginePath:  "identity",
-			},
-			actorToken: "test-token",
-			clientID:   "test-client",
-			wantErr:    true,
-			errMsg:     "vault_addr not configured",
-		},
-		{
-			name: "missing identity_secrets_engine_path",
-			config: &oauthConfig{
-				VaultAddr:                  "http://localhost:8200",
-				VaultToken:                 "test-token",
-				IdentitySecretsEnginePath:  "",
-			},
-			actorToken: "test-token",
-			clientID:   "test-client",
-			wantErr:    true,
-			errMsg:     "identity_secrets_engine_path not configured",
-		},
-		{
-			name: "missing active field in response",
-			config: &oauthConfig{
-				VaultAddr:                  "", // Will be set to mock server URL
-				VaultToken:                 "test-token",
-				IdentitySecretsEnginePath:  "identity",
-			},
-			actorToken: "test-token",
-			clientID:   "test-client",
-			mockResponse: map[string]interface{}{
-				"some_other_field": "value",
-			},
-			mockStatusCode: http.StatusOK,
-			wantErr:        true,
-			errMsg:         "missing 'active' field",
-		},
-		{
-			name: "with vault namespace",
-			config: &oauthConfig{
-				VaultAddr:                  "", // Will be set to mock server URL
-				VaultToken:                 "test-token",
-				VaultNamespace:             "test-namespace",
-				IdentitySecretsEnginePath:  "identity",
-			},
-			actorToken: "valid-actor-token",
-			clientID:   "test-client",
-			mockResponse: map[string]interface{}{
-				"active": true,
-			},
-			mockStatusCode: http.StatusOK,
-			wantErr:        false,
-		},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			// Create mock HTTP server if we need to test API calls
-			var mockServer *httptest.Server
-			if tc.mockResponse != nil {
-				mockServer = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-					// Verify the request (Vault client uses PUT for Write operations)
-					assert.Equal(t, "PUT", r.Method)
-					assert.Contains(t, r.URL.Path, "/identity/oidc/introspect")
-					
-					// Check for namespace header if configured
-					if tc.config.VaultNamespace != "" {
-						assert.Equal(t, tc.config.VaultNamespace, r.Header.Get("X-Vault-Namespace"))
-					}
-					
-					// Check for token header
-					assert.Equal(t, tc.config.VaultToken, r.Header.Get("X-Vault-Token"))
-
-					// Return mock response
-					w.Header().Set("Content-Type", "application/json")
-					w.WriteHeader(tc.mockStatusCode)
-					
-					response := map[string]interface{}{
-						"data": tc.mockResponse,
-					}
-					json.NewEncoder(w).Encode(response)
-				}))
-				defer mockServer.Close()
-				
-				// Set the mock server URL
-				tc.config.VaultAddr = mockServer.URL
-			}
-
-			// Create backend
-			b, _ := getTestBackend(t)
-			backend := b.(*oauthBackend)
-
-			// Create a mock request
-			req := &logical.Request{}
-
-			// Call verifyActorToken
-			err := backend.verifyActorToken(context.Background(), req, tc.config, tc.actorToken, tc.clientID)
-
-			// Check results
-			if tc.wantErr {
-				require.Error(t, err)
-				if tc.errMsg != "" {
-					assert.Contains(t, err.Error(), tc.errMsg)
-				}
-			} else {
-				assert.NoError(t, err)
-			}
-		})
-	}
-}
 
 // Made with Bob

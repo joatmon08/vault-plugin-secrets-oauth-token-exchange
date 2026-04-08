@@ -33,3 +33,5 @@ go.work.sum
 
 # IBM Bob
 .secrets.baseline
+
+fixtures/
