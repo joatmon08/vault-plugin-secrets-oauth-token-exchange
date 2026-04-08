@@ -426,5 +426,527 @@ func TestDecodeToken(t *testing.T) {
 		})
 	}
 }
+func TestGeneratePayload(t *testing.T) {
+	tests := []struct {
+		name    string
+		token   *accessToken
+		wantErr bool
+		check   func(t *testing.T, payload []byte)
+	}{
+		{
+			name: "basic token with all fields",
+			token: &accessToken{
+				Issuer:   "http://127.0.0.1:8200/v1/identity/oidc",
+				Subject:  "52b1da4c-0a60-f23a-3384-1d5837af487e",
+				Audience: "test-client",
+				Expiry:   1775586454,
+				IssuedAt: 1775500054,
+				ClientID: "test-client",
+				Actors: map[string]interface{}{
+					"sub":       "52b1da4c-0a60-f23a-3384-1d5837af487e",
+					"client_id": "test-client",
+				},
+				Scope: "helloworld:read",
+			},
+			wantErr: false,
+			check: func(t *testing.T, payload []byte) {
+				var claims map[string]interface{}
+				err := json.Unmarshal(payload, &claims)
+				require.NoError(t, err)
+				assert.Equal(t, "http://127.0.0.1:8200/v1/identity/oidc", claims["iss"])
+				assert.Equal(t, "52b1da4c-0a60-f23a-3384-1d5837af487e", claims["sub"])
+				assert.Equal(t, "test-client", claims["aud"])
+				assert.Equal(t, float64(1775586454), claims["exp"])
+				assert.Equal(t, float64(1775500054), claims["iat"])
+				assert.Equal(t, "test-client", claims["client_id"])
+				assert.Equal(t, "helloworld:read", claims["scope"])
+			},
+		},
+		{
+			name: "token with nested act claims",
+			token: &accessToken{
+				Issuer:   "http://127.0.0.1:8200/v1/identity/oidc",
+				Subject:  "064a698a-4133-7443-b89d-aecd885aa3ee",
+				Audience: "test-client",
+				Expiry:   1775586454,
+				IssuedAt: 1775500054,
+				ClientID: "test-client",
+				Actors: map[string]interface{}{
+					"sub":       "52b1da4c-0a60-f23a-3384-1d5837af487e",
+					"client_id": "test-client",
+					"act": map[string]interface{}{
+						"sub":       "a1b2c3d4-5678-90ab-cdef-1234567890ab",
+						"client_id": "second-client",
+					},
+				},
+				Scope: "helloworld:read",
+			},
+			wantErr: false,
+			check: func(t *testing.T, payload []byte) {
+				var claims map[string]interface{}
+				err := json.Unmarshal(payload, &claims)
+				require.NoError(t, err)
+
+				// Check top-level claims
+				assert.Equal(t, "http://127.0.0.1:8200/v1/identity/oidc", claims["iss"])
+				assert.Equal(t, "064a698a-4133-7443-b89d-aecd885aa3ee", claims["sub"])
+				assert.Equal(t, "test-client", claims["aud"])
+
+				// Check act claim structure
+				act, ok := claims["act"].(map[string]interface{})
+				require.True(t, ok, "act should be a map")
+				assert.Equal(t, "52b1da4c-0a60-f23a-3384-1d5837af487e", act["sub"])
+				assert.Equal(t, "test-client", act["client_id"])
+
+				// Check nested act claim
+				nestedAct, ok := act["act"].(map[string]interface{})
+				require.True(t, ok, "nested act should be a map")
+				assert.Equal(t, "a1b2c3d4-5678-90ab-cdef-1234567890ab", nestedAct["sub"])
+				assert.Equal(t, "second-client", nestedAct["client_id"])
+			},
+		},
+		{
+			name: "token with deeply nested act claims (3 levels)",
+			token: &accessToken{
+				Issuer:   "http://127.0.0.1:8200/v1/identity/oidc",
+				Subject:  "064a698a-4133-7443-b89d-aecd885aa3ee",
+				Audience: "test-client",
+				Expiry:   1775586454,
+				IssuedAt: 1775500054,
+				ClientID: "test-client",
+				Actors: map[string]interface{}{
+					"sub":       "52b1da4c-0a60-f23a-3384-1d5837af487e",
+					"client_id": "test-client",
+					"act": map[string]interface{}{
+						"sub":       "a1b2c3d4-5678-90ab-cdef-1234567890ab",
+						"client_id": "service-client-1",
+						"act": map[string]interface{}{
+							"sub":       "f9e8d7c6-b5a4-3210-fedc-ba9876543210",
+							"client_id": "service-client-2",
+						},
+					},
+				},
+				Scope: "helloworld:read helloworld:write",
+			},
+			wantErr: false,
+			check: func(t *testing.T, payload []byte) {
+				var claims map[string]interface{}
+				err := json.Unmarshal(payload, &claims)
+				require.NoError(t, err)
+
+				// Check first level act
+				act1, ok := claims["act"].(map[string]interface{})
+				require.True(t, ok)
+				assert.Equal(t, "52b1da4c-0a60-f23a-3384-1d5837af487e", act1["sub"])
+				assert.Equal(t, "test-client", act1["client_id"])
+
+				// Check second level act
+				act2, ok := act1["act"].(map[string]interface{})
+				require.True(t, ok)
+				assert.Equal(t, "a1b2c3d4-5678-90ab-cdef-1234567890ab", act2["sub"])
+				assert.Equal(t, "service-client-1", act2["client_id"])
+
+				// Check third level act
+				act3, ok := act2["act"].(map[string]interface{})
+				require.True(t, ok)
+				assert.Equal(t, "f9e8d7c6-b5a4-3210-fedc-ba9876543210", act3["sub"])
+				assert.Equal(t, "service-client-2", act3["client_id"])
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			payload, err := tc.token.generatePayload()
+
+			if tc.wantErr {
+				require.Error(t, err)
+			} else {
+				require.NoError(t, err)
+				require.NotNil(t, payload)
+				if tc.check != nil {
+					tc.check(t, payload)
+				}
+			}
+		})
+	}
+}
+
+func TestSignPayload(t *testing.T) {
+	tests := []struct {
+		name    string
+		setup   func(t *testing.T) (*namedKey, []byte)
+		wantErr bool
+		errMsg  string
+	}{
+		{
+			name: "successfully sign payload with RS256",
+			setup: func(t *testing.T) (*namedKey, []byte) {
+				privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+				require.NoError(t, err)
+
+				jwk := &jose.JSONWebKey{
+					Key:       privateKey,
+					KeyID:     "94934611-ecd7-a35a-ce12-afa710cb5fb8",
+					Algorithm: string(jose.RS256),
+				}
+
+				key := &namedKey{
+					Algorithm:  string(jose.RS256),
+					SigningKey: jwk,
+				}
+
+				payload := []byte(`{"iss":"http://127.0.0.1:8200/v1/identity/oidc","sub":"52b1da4c-0a60-f23a-3384-1d5837af487e","aud":"test-client"}`)
+				return key, payload
+			},
+			wantErr: false,
+		},
+		{
+			name: "successfully sign payload with nested act claims",
+			setup: func(t *testing.T) (*namedKey, []byte) {
+				privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+				require.NoError(t, err)
+
+				jwk := &jose.JSONWebKey{
+					Key:       privateKey,
+					KeyID:     "94934611-ecd7-a35a-ce12-afa710cb5fb8",
+					Algorithm: string(jose.RS256),
+				}
+
+				key := &namedKey{
+					Algorithm:  string(jose.RS256),
+					SigningKey: jwk,
+				}
+
+				token := &accessToken{
+					Issuer:   "http://127.0.0.1:8200/v1/identity/oidc",
+					Subject:  "064a698a-4133-7443-b89d-aecd885aa3ee",
+					Audience: "test-client",
+					Expiry:   time.Now().Add(1 * time.Hour).Unix(),
+					IssuedAt: time.Now().Unix(),
+					ClientID: "test-client",
+					Actors: map[string]interface{}{
+						"sub":       "52b1da4c-0a60-f23a-3384-1d5837af487e",
+						"client_id": "test-client",
+						"act": map[string]interface{}{
+							"sub": "a1b2c3d4-5678-90ab-cdef-1234567890ab",
+						},
+					},
+					Scope: "helloworld:read",
+				}
+
+				payload, err := token.generatePayload()
+				require.NoError(t, err)
+
+				return key, payload
+			},
+			wantErr: false,
+		},
+		{
+			name: "fail when signing key is nil",
+			setup: func(t *testing.T) (*namedKey, []byte) {
+				key := &namedKey{
+					Algorithm:  string(jose.RS256),
+					SigningKey: nil,
+				}
+
+				payload := []byte(`{"iss":"http://127.0.0.1:8200/v1/identity/oidc"}`)
+				return key, payload
+			},
+			wantErr: true,
+			errMsg:  "signing key is nil",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			key, payload := tc.setup(t)
+
+			signedToken, err := key.signPayload(payload)
+
+			if tc.wantErr {
+				require.Error(t, err)
+				if tc.errMsg != "" {
+					assert.Contains(t, err.Error(), tc.errMsg)
+				}
+			} else {
+				require.NoError(t, err)
+				assert.NotEmpty(t, signedToken)
+
+				// Verify the token can be parsed
+				parsedToken, err := jwt.ParseSigned(signedToken)
+				require.NoError(t, err)
+
+				var claims map[string]interface{}
+				err = parsedToken.UnsafeClaimsWithoutVerification(&claims)
+				require.NoError(t, err)
+
+				// Verify basic structure
+				assert.Contains(t, claims, "iss")
+				assert.Contains(t, claims, "sub")
+				assert.Contains(t, claims, "aud")
+			}
+		})
+	}
+}
+
+func TestPerformTokenExchange(t *testing.T) {
+	tests := []struct {
+		name    string
+		setup   func(t *testing.T, b *oauthBackend, storage logical.Storage) (subjectToken, actorToken string)
+		wantErr bool
+		errMsg  string
+		check   func(t *testing.T, result map[string]interface{})
+	}{
+		{
+			name: "successful token exchange with nested act claims",
+			setup: func(t *testing.T, b *oauthBackend, storage logical.Storage) (string, string) {
+				// Create subject token with may_act claim
+				subjectToken := createJWTWithClaims(map[string]interface{}{
+					"iss":       "http://localhost:8200/v1/identity/oidc/provider/test",
+					"sub":       "064a698a-4133-7443-b89d-aecd885aa3ee",
+					"aud":       "lF7iYit6FaxpfyOMICqJLzDrQsCYQYsZ",
+					"client_id": "lF7iYit6FaxpfyOMICqJLzDrQsCYQYsZ",
+					"exp":       time.Now().Add(1 * time.Hour).Unix(),
+					"namespace": "root",
+					"may_act": []map[string]string{
+						{
+							"client_id": "test-client",
+							"sub":       "52b1da4c-0a60-f23a-3384-1d5837af487e",
+						},
+					},
+				})
+
+				// Create actor token with nested act claims
+				actorToken := createJWTWithClaims(map[string]interface{}{
+					"iss":       "http://127.0.0.1:8200/v1/identity/oidc",
+					"sub":       "52b1da4c-0a60-f23a-3384-1d5837af487e",
+					"aud":       "test-client",
+					"client_id": "test-client",
+					"exp":       time.Now().Add(1 * time.Hour).Unix(),
+					"namespace": "root",
+					"scope":     "helloworld:read",
+					"act": map[string]interface{}{
+						"sub":       "a1b2c3d4-5678-90ab-cdef-1234567890ab",
+						"client_id": "service-client-1",
+						"act": map[string]interface{}{
+							"sub":       "f9e8d7c6-b5a4-3210-fedc-ba9876543210",
+							"client_id": "service-client-2",
+						},
+					},
+				})
+
+				return subjectToken, actorToken
+			},
+			wantErr: false,
+			check: func(t *testing.T, result map[string]interface{}) {
+				// Verify response structure
+				assert.Contains(t, result, "access_token")
+				assert.Contains(t, result, "issued_token_type")
+				assert.Contains(t, result, "token_type")
+				assert.Equal(t, "Bearer", result["token_type"])
+				assert.Equal(t, tokenTypeAccessToken, result["issued_token_type"])
+
+				// Parse and verify the access token
+				accessToken := result["access_token"].(string)
+				parsedToken, err := jwt.ParseSigned(accessToken)
+				require.NoError(t, err)
+
+				var claims map[string]interface{}
+				err = parsedToken.UnsafeClaimsWithoutVerification(&claims)
+				require.NoError(t, err)
+
+				// Verify standard claims are preserved
+				aud, ok := claims["aud"].(string)
+				require.True(t, ok, "aud claim should be present")
+				assert.Equal(t, "helloworld-agent", aud)
+
+				clientID, ok := claims["client_id"].(string)
+				require.True(t, ok, "client_id claim should be present")
+				assert.Equal(t, "test-client", clientID)
+
+				scope, ok := claims["scope"].(string)
+				require.True(t, ok, "scope claim should be present")
+				assert.Equal(t, "helloworld:read", scope)
+
+				// Verify nested act claims are preserved
+				act, ok := claims["act"].(map[string]interface{})
+				require.True(t, ok, "act claim should be present")
+				assert.Equal(t, "a1b2c3d4-5678-90ab-cdef-1234567890ab", act["sub"])
+				assert.Equal(t, "service-client-1", act["client_id"])
+
+				// Verify nested act
+				nestedAct, ok := act["act"].(map[string]interface{})
+				require.True(t, ok, "nested act claim should be present")
+				assert.Equal(t, "f9e8d7c6-b5a4-3210-fedc-ba9876543210", nestedAct["sub"])
+				assert.Equal(t, "service-client-2", nestedAct["client_id"])
+			},
+		},
+		{
+			name: "successful token exchange with deeply nested act claims (3 levels)",
+			setup: func(t *testing.T, b *oauthBackend, storage logical.Storage) (string, string) {
+				subjectToken := createJWTWithClaims(map[string]interface{}{
+					"iss":       "http://localhost:8200/v1/identity/oidc/provider/test",
+					"sub":       "064a698a-4133-7443-b89d-aecd885aa3ee",
+					"aud":       "lF7iYit6FaxpfyOMICqJLzDrQsCYQYsZ",
+					"client_id": "lF7iYit6FaxpfyOMICqJLzDrQsCYQYsZ",
+					"exp":       time.Now().Add(1 * time.Hour).Unix(),
+					"namespace": "root",
+					"may_act": []map[string]string{
+						{
+							"client_id": "test-client",
+							"sub":       "52b1da4c-0a60-f23a-3384-1d5837af487e",
+						},
+					},
+				})
+
+				// Create actor token with 3 levels of nested act claims
+				actorToken := createJWTWithClaims(map[string]interface{}{
+					"iss":       "http://127.0.0.1:8200/v1/identity/oidc",
+					"sub":       "52b1da4c-0a60-f23a-3384-1d5837af487e",
+					"aud":       "test-client",
+					"client_id": "test-client",
+					"exp":       time.Now().Add(1 * time.Hour).Unix(),
+					"namespace": "root",
+					"scope":     "helloworld:read helloworld:write",
+					"act": map[string]interface{}{
+						"sub":       "a1b2c3d4-5678-90ab-cdef-1234567890ab",
+						"client_id": "service-client-1",
+						"act": map[string]interface{}{
+							"sub":       "f9e8d7c6-b5a4-3210-fedc-ba9876543210",
+							"client_id": "service-client-2",
+							"act": map[string]interface{}{
+								"sub":       "11223344-5566-7788-99aa-bbccddeeff00",
+								"client_id": "service-client-3",
+							},
+						},
+					},
+				})
+
+				return subjectToken, actorToken
+			},
+			wantErr: false,
+			check: func(t *testing.T, result map[string]interface{}) {
+				accessToken := result["access_token"].(string)
+				parsedToken, err := jwt.ParseSigned(accessToken)
+				require.NoError(t, err)
+
+				var claims map[string]interface{}
+				err = parsedToken.UnsafeClaimsWithoutVerification(&claims)
+				require.NoError(t, err)
+
+				// Verify standard claims are preserved
+				aud, ok := claims["aud"].(string)
+				require.True(t, ok, "aud claim should be present")
+				assert.Equal(t, "helloworld-agent", aud)
+
+				clientID, ok := claims["client_id"].(string)
+				require.True(t, ok, "client_id claim should be present")
+				assert.Equal(t, "test-client", clientID)
+
+				scope, ok := claims["scope"].(string)
+				require.True(t, ok, "scope claim should be present")
+				assert.Equal(t, "helloworld:read", scope)
+
+				// Verify 3 levels of nested act claims
+				act1, ok := claims["act"].(map[string]interface{})
+				require.True(t, ok)
+				assert.Equal(t, "a1b2c3d4-5678-90ab-cdef-1234567890ab", act1["sub"])
+				assert.Equal(t, "service-client-1", act1["client_id"])
+
+				act2, ok := act1["act"].(map[string]interface{})
+				require.True(t, ok)
+				assert.Equal(t, "f9e8d7c6-b5a4-3210-fedc-ba9876543210", act2["sub"])
+				assert.Equal(t, "service-client-2", act2["client_id"])
+
+				act3, ok := act2["act"].(map[string]interface{})
+				require.True(t, ok)
+				assert.Equal(t, "11223344-5566-7788-99aa-bbccddeeff00", act3["sub"])
+				assert.Equal(t, "service-client-3", act3["client_id"])
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			b, storage := getTestBackend(t)
+			backend := b.(*oauthBackend)
+
+			// Setup config
+			config := &oauthConfig{
+				ClientID:     "test-client",
+				ClientSecret: "test-secret",
+			}
+			entry, err := logical.StorageEntryJSON("config", config)
+			require.NoError(t, err)
+			err = storage.Put(context.Background(), entry)
+			require.NoError(t, err)
+
+			// Create a test key
+			privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+			require.NoError(t, err)
+
+			jwk := &jose.JSONWebKey{
+				Key:       privateKey,
+				KeyID:     "94934611-ecd7-a35a-ce12-afa710cb5fb8",
+				Algorithm: string(jose.RS256),
+			}
+
+			key := &namedKey{
+				name:             "test-key",
+				Algorithm:        string(jose.RS256),
+				SigningKey:       jwk,
+				VerificationTTL:  24 * time.Hour,
+				AllowedClientIDs: []string{"*"},
+			}
+
+			keyEntry, err := logical.StorageEntryJSON(keyStoragePath+"test-key", key)
+			require.NoError(t, err)
+			err = storage.Put(context.Background(), keyEntry)
+			require.NoError(t, err)
+
+			// Create a test role
+			role := &roleEntry{
+				Key: "test-key",
+				TTL: 1 * time.Hour,
+			}
+
+			roleEntry, err := logical.StorageEntryJSON(roleStoragePrefix+"test-role", role)
+			require.NoError(t, err)
+			err = storage.Put(context.Background(), roleEntry)
+			require.NoError(t, err)
+
+			// Setup test tokens
+			subjectToken, actorToken := tc.setup(t, backend, storage)
+
+			// Perform token exchange
+			result, err := backend.performTokenExchange(
+				context.Background(),
+				&logical.Request{Storage: storage},
+				config,
+				role,
+				subjectToken,
+				actorToken,
+				grantTypeTokenExchange,
+				"test-client",
+				"helloworld-agent",
+				"helloworld:read",
+			)
+
+			if tc.wantErr {
+				require.Error(t, err)
+				if tc.errMsg != "" {
+					assert.Contains(t, err.Error(), tc.errMsg)
+				}
+			} else {
+				require.NoError(t, err)
+				require.NotNil(t, result)
+				if tc.check != nil {
+					tc.check(t, result)
+				}
+			}
+		})
+	}
+}
 
 // Made with Bob

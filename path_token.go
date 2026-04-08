@@ -219,10 +219,17 @@ func (b *oauthBackend) performTokenExchange(ctx context.Context, req *logical.Re
 		return nil, fmt.Errorf("actor token decoding failed: %w", err)
 	}
 
+	// Verify top-level actor has permission to act on behalf of subject
+	var hasPermission bool
 	for i := 0; i < len(subjectTokenMayActClaims); i++ {
 		if subjectTokenMayActClaims[i].ClientID == actorTokenClaims.ClientID && subjectTokenMayActClaims[i].Subject == actorTokenClaims.Subject {
-			return nil, fmt.Errorf("actor token does not have permission to act on behalf of subject token")
+			hasPermission = true
+			break
 		}
+	}
+	
+	if !hasPermission {
+		return nil, fmt.Errorf("actor token does not have permission to act on behalf of subject token")
 	}
 
 	// Load the signing key referenced by the role
@@ -344,7 +351,7 @@ func (b *oauthBackend) decodeActorToken(token string) (*actorClaims, error) {
 		ClientID: clientID.(string),
 	}
 
-	if actors, ok := claims["actors"]; ok {
+	if actors, ok := claims["act"]; ok {
 		claim.Actors = actors.(map[string]interface{})
 	}
 
