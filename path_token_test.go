@@ -2,6 +2,8 @@ package oauth
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
 	"encoding/base64"
 	"encoding/json"
 	"net/http"
@@ -9,14 +11,38 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-jose/go-jose/v3"
+	"github.com/go-jose/go-jose/v3/jwt"
 	"github.com/hashicorp/vault/sdk/logical"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
+// createJWTWithClaims creates a properly signed JWT for testing using go-jose
 func createJWTWithClaims(claims map[string]interface{}) string {
-	payload, _ := json.Marshal(claims)
-	return "header." + base64.RawURLEncoding.EncodeToString(payload) + ".signature"
+	// Generate a test RSA key
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		panic(err)
+	}
+
+	// Create a signer
+	signer, err := jose.NewSigner(
+		jose.SigningKey{Algorithm: jose.RS256, Key: privateKey},
+		(&jose.SignerOptions{}).WithType("JWT"),
+	)
+	if err != nil {
+		panic(err)
+	}
+
+	// Build and sign the JWT
+	builder := jwt.Signed(signer).Claims(claims)
+	token, err := builder.CompactSerialize()
+	if err != nil {
+		panic(err)
+	}
+
+	return token
 }
 
 func TestVerifySubjectToken(t *testing.T) {
@@ -44,7 +70,7 @@ func TestVerifySubjectToken(t *testing.T) {
 				"sub":       "user123",
 				"aud":       "test",
 				"client_id": "test-client",
-				"may_act":   map[string]interface{}{"sub": "actor-sub"},
+				"may_act":   []map[string]string{{"sub": "actor-sub"}},
 			}),
 			wantErr: true,
 			errMsg:  "JWT missing required 'may_act' claim with 'client_id'",
@@ -56,7 +82,7 @@ func TestVerifySubjectToken(t *testing.T) {
 				"sub":       "user123",
 				"aud":       "test",
 				"client_id": "test-client",
-				"may_act":   map[string]interface{}{"client_id": "actor"},
+				"may_act":   []map[string]string{{"client_id": "actor"}},
 			}),
 			wantErr: true,
 			errMsg:  "JWT missing required 'may_act' claim with 'sub'",
@@ -68,7 +94,7 @@ func TestVerifySubjectToken(t *testing.T) {
 				"sub":       "user123",
 				"aud":       "test",
 				"client_id": "test-client",
-				"may_act":   map[string]interface{}{"client_id": "actor", "sub": "actor-sub"},
+				"may_act":   []map[string]string{{"client_id": "actor", "sub": "actor-sub"}},
 			}),
 			wantErr: false,
 		},
@@ -95,8 +121,8 @@ func TestVerifySubjectToken(t *testing.T) {
 			} else {
 				assert.NoError(t, err)
 				require.NotNil(t, mayAct)
-				assert.Equal(t, "actor", mayAct.ClientID)
-				assert.Equal(t, "actor-sub", mayAct.Subject)
+				assert.Equal(t, "actor", mayAct[0].ClientID)
+				assert.Equal(t, "actor-sub", mayAct[0].Subject)
 			}
 		})
 	}
@@ -283,25 +309,25 @@ func TestDecodeToken(t *testing.T) {
 			name:    "invalid JWT - not enough parts",
 			token:   "invalid.token",
 			wantErr: true,
-			errMsg:  "invalid JWT format: expected 3 parts, got 2",
+			errMsg:  "compact JWS format must have three parts",
 		},
 		{
 			name:    "invalid JWT - single part",
 			token:   "invalidtoken",
 			wantErr: true,
-			errMsg:  "invalid JWT format: expected 3 parts, got 1",
+			errMsg:  "compact JWS format must have three parts",
 		},
 		{
 			name:    "invalid JWT - bad base64 encoding",
 			token:   "header.!!!invalid-base64!!!.signature",
 			wantErr: true,
-			errMsg:  "failed to decode JWT payload",
+			errMsg:  "illegal base64 data",
 		},
 		{
 			name:    "invalid JWT - not valid JSON",
 			token:   "header." + base64.RawURLEncoding.EncodeToString([]byte("not valid json")) + ".signature",
 			wantErr: true,
-			errMsg:  "failed to parse JWT claims",
+			errMsg:  "illegal base64 data",
 		},
 		{
 			name: "invalid JWT - missing iss claim",
@@ -353,7 +379,7 @@ func TestDecodeToken(t *testing.T) {
 				"exp":       pastTime,
 			}),
 			wantErr: true,
-			errMsg:  "JWT has expired",
+			errMsg:  "token is expired",
 		},
 		{
 			name: "valid JWT - with all required claims and future expiration",
@@ -400,6 +426,5 @@ func TestDecodeToken(t *testing.T) {
 		})
 	}
 }
-
 
 // Made with Bob
