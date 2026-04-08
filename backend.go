@@ -46,6 +46,7 @@ func backend() *oauthBackend {
 			pathRole(&b),
 			pathKey(&b),
 			pathToken(&b),
+			pathJWKS(&b),
 		),
 		Secrets:     []*framework.Secret{},
 		BackendType: logical.TypeLogical,

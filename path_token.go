@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"time"
 
 	"github.com/go-jose/go-jose/v3"
@@ -368,11 +369,112 @@ func (b *oauthBackend) decodeActorToken(token string) (*actorTokenClaims, error)
 	return claim, nil
 }
 
-// verifySubjectToken verifies the subject token by decoding the JWT
-func (b *oauthBackend) verifySubjectToken(ctx context.Context, config *oauthConfig, token string) (*subjectTokenClaims, error) {
-	claims, err := decodeToken(token)
+// verifyTokenWithJWKS fetches the JWKS from the given URI and verifies the token signature
+func verifyTokenWithJWKS(jwksURI string, token string) (map[string]interface{}, error) {
+	// Parse the JWT
+	parsedToken, err := jwt.ParseSigned(token)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to parse JWT: %w", err)
+	}
+
+	// Get the key ID from the token header
+	if len(parsedToken.Headers) == 0 {
+		return nil, fmt.Errorf("JWT has no headers")
+	}
+	keyID := parsedToken.Headers[0].KeyID
+	if keyID == "" {
+		return nil, fmt.Errorf("JWT missing key ID in header")
+	}
+
+	// Fetch the JWKS from the URI
+	jwks, err := fetchJWKS(jwksURI)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch JWKS: %w", err)
+	}
+
+	// Find the key with matching key ID
+	var publicKey *jose.JSONWebKey
+	for _, key := range jwks.Keys {
+		if key.KeyID == keyID {
+			publicKey = &key
+			break
+		}
+	}
+
+	if publicKey == nil {
+		return nil, fmt.Errorf("public key not found for key ID: %s", keyID)
+	}
+
+	// Verify the signature and extract claims
+	var standardClaims jwt.Claims
+	if err := parsedToken.Claims(publicKey, &standardClaims); err != nil {
+		return nil, fmt.Errorf("failed to verify JWT signature: %w", err)
+	}
+
+	// Validate standard claims (exp, nbf, iat)
+	expected := jwt.Expected{
+		Time: time.Now(),
+	}
+	if err := standardClaims.Validate(expected); err != nil {
+		return nil, fmt.Errorf("JWT validation failed: %w", err)
+	}
+
+	// Extract all claims including custom ones
+	var allClaims map[string]interface{}
+	if err := parsedToken.Claims(publicKey, &allClaims); err != nil {
+		return nil, fmt.Errorf("failed to extract all JWT claims: %w", err)
+	}
+
+	// Verify required claims are present
+	requiredClaims := []string{"iss", "sub", "client_id", "aud"}
+	for _, claim := range requiredClaims {
+		if _, ok := allClaims[claim]; !ok {
+			return nil, fmt.Errorf("JWT missing required '%s' claim", claim)
+		}
+	}
+
+	return allClaims, nil
+}
+
+// fetchJWKS fetches a JWKS from the given URI
+func fetchJWKS(uri string) (*jose.JSONWebKeySet, error) {
+	// Use http.Get to fetch the JWKS
+	resp, err := http.Get(uri)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch JWKS from %s: %w", uri, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("JWKS endpoint returned status %d", resp.StatusCode)
+	}
+
+	var jwks jose.JSONWebKeySet
+	if err := json.NewDecoder(resp.Body).Decode(&jwks); err != nil {
+		return nil, fmt.Errorf("failed to decode JWKS: %w", err)
+	}
+
+	return &jwks, nil
+}
+
+// verifySubjectToken verifies the subject token by validating the JWT signature against JWKS if configured,
+// and decoding the JWT claims
+func (b *oauthBackend) verifySubjectToken(ctx context.Context, config *oauthConfig, token string) (*subjectTokenClaims, error) {
+	var claims map[string]interface{}
+	var err error
+	
+	// If JWKS URI is configured, verify the signature and decode
+	if config.SubjectTokenJWKSURI != "" {
+		claims, err = verifyTokenWithJWKS(config.SubjectTokenJWKSURI, token)
+		if err != nil {
+			return nil, fmt.Errorf("failed to verify subject token with JWKS: %w", err)
+		}
+	} else {
+		// Decode without signature verification (for backward compatibility)
+		claims, err = decodeToken(token)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	mayActRaw, ok := claims["may_act"]

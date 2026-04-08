@@ -963,4 +963,286 @@ func TestPerformTokenExchange(t *testing.T) {
 	}
 }
 
+
+// TestVerifySubjectTokenWithJWKS tests subject token verification using JWKS
+func TestVerifySubjectTokenWithJWKS(t *testing.T) {
+	// Generate a test RSA key pair
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	require.NoError(t, err)
+
+	keyID := "test-key-id"
+	
+	// Create a JWK for the public key
+	publicJWK := jose.JSONWebKey{
+		Key:       &privateKey.PublicKey,
+		KeyID:     keyID,
+		Algorithm: string(jose.RS256),
+		Use:       "sig",
+	}
+
+	// Create a JWKS with the public key
+	jwks := jose.JSONWebKeySet{
+		Keys: []jose.JSONWebKey{publicJWK},
+	}
+
+	// Create a mock JWKS server
+	jwksServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(jwks)
+	}))
+	defer jwksServer.Close()
+
+	t.Run("valid subject token with JWKS verification", func(t *testing.T) {
+		b, _ := getTestBackend(t)
+
+		// Create a signer with the private key
+		signer, err := jose.NewSigner(
+			jose.SigningKey{Algorithm: jose.RS256, Key: privateKey},
+			(&jose.SignerOptions{}).WithType("JWT").WithHeader("kid", keyID),
+		)
+		require.NoError(t, err)
+
+		// Create claims with may_act
+		claims := map[string]interface{}{
+			"iss":       "https://issuer.example.com",
+			"sub":       "user123",
+			"aud":       "https://resource.example.com",
+			"client_id": "client123",
+			"exp":       time.Now().Add(1 * time.Hour).Unix(),
+			"iat":       time.Now().Unix(),
+			"may_act": []map[string]interface{}{
+				{
+					"client_id": "actor-client",
+					"sub":       "actor-sub",
+				},
+			},
+		}
+
+		// Sign the token
+		builder := jwt.Signed(signer).Claims(claims)
+		token, err := builder.CompactSerialize()
+		require.NoError(t, err)
+
+		// Create config with JWKS URI
+		config := &oauthConfig{
+			ClientID:            "client123",
+			SubjectTokenJWKSURI: jwksServer.URL,
+		}
+
+		// Verify the token
+		ob := b.(*oauthBackend)
+		result, err := ob.verifySubjectToken(context.Background(), config, token)
+		require.NoError(t, err)
+		assert.NotNil(t, result)
+		assert.Equal(t, "user123", result.Subject)
+		assert.Len(t, result.MayAct, 1)
+		assert.Equal(t, "actor-client", result.MayAct[0].ClientID)
+		assert.Equal(t, "actor-sub", result.MayAct[0].Subject)
+	})
+
+	t.Run("invalid signature with JWKS verification", func(t *testing.T) {
+		b, _ := getTestBackend(t)
+
+		// Create a different key for signing (wrong key)
+		wrongKey, err := rsa.GenerateKey(rand.Reader, 2048)
+		require.NoError(t, err)
+
+		signer, err := jose.NewSigner(
+			jose.SigningKey{Algorithm: jose.RS256, Key: wrongKey},
+			(&jose.SignerOptions{}).WithType("JWT").WithHeader("kid", keyID),
+		)
+		require.NoError(t, err)
+
+		claims := map[string]interface{}{
+			"iss":       "https://issuer.example.com",
+			"sub":       "user123",
+			"aud":       "https://resource.example.com",
+			"client_id": "client123",
+			"exp":       time.Now().Add(1 * time.Hour).Unix(),
+			"iat":       time.Now().Unix(),
+			"may_act": []map[string]interface{}{
+				{
+					"client_id": "actor-client",
+					"sub":       "actor-sub",
+				},
+			},
+		}
+
+		builder := jwt.Signed(signer).Claims(claims)
+		token, err := builder.CompactSerialize()
+		require.NoError(t, err)
+
+		config := &oauthConfig{
+			ClientID:            "client123",
+			SubjectTokenJWKSURI: jwksServer.URL,
+		}
+
+		// Verify should fail due to signature mismatch
+		ob := b.(*oauthBackend)
+		_, err = ob.verifySubjectToken(context.Background(), config, token)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "failed to verify subject token with JWKS")
+	})
+
+	t.Run("missing key ID in token header", func(t *testing.T) {
+		b, _ := getTestBackend(t)
+
+		// Create signer without key ID
+		signer, err := jose.NewSigner(
+			jose.SigningKey{Algorithm: jose.RS256, Key: privateKey},
+			(&jose.SignerOptions{}).WithType("JWT"),
+		)
+		require.NoError(t, err)
+
+		claims := map[string]interface{}{
+			"iss":       "https://issuer.example.com",
+			"sub":       "user123",
+			"aud":       "https://resource.example.com",
+			"client_id": "client123",
+			"exp":       time.Now().Add(1 * time.Hour).Unix(),
+			"iat":       time.Now().Unix(),
+			"may_act": []map[string]interface{}{
+				{
+					"client_id": "actor-client",
+					"sub":       "actor-sub",
+				},
+			},
+		}
+
+		builder := jwt.Signed(signer).Claims(claims)
+		token, err := builder.CompactSerialize()
+		require.NoError(t, err)
+
+		config := &oauthConfig{
+			ClientID:            "client123",
+			SubjectTokenJWKSURI: jwksServer.URL,
+		}
+
+		ob := b.(*oauthBackend)
+		_, err = ob.verifySubjectToken(context.Background(), config, token)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "JWT missing key ID in header")
+	})
+
+	t.Run("key not found in JWKS", func(t *testing.T) {
+		b, _ := getTestBackend(t)
+
+		// Create signer with a different key ID
+		signer, err := jose.NewSigner(
+			jose.SigningKey{Algorithm: jose.RS256, Key: privateKey},
+			(&jose.SignerOptions{}).WithType("JWT").WithHeader("kid", "non-existent-key"),
+		)
+		require.NoError(t, err)
+
+		claims := map[string]interface{}{
+			"iss":       "https://issuer.example.com",
+			"sub":       "user123",
+			"aud":       "https://resource.example.com",
+			"client_id": "client123",
+			"exp":       time.Now().Add(1 * time.Hour).Unix(),
+			"iat":       time.Now().Unix(),
+			"may_act": []map[string]interface{}{
+				{
+					"client_id": "actor-client",
+					"sub":       "actor-sub",
+				},
+			},
+		}
+
+		builder := jwt.Signed(signer).Claims(claims)
+		token, err := builder.CompactSerialize()
+		require.NoError(t, err)
+
+		config := &oauthConfig{
+			ClientID:            "client123",
+			SubjectTokenJWKSURI: jwksServer.URL,
+		}
+
+		ob := b.(*oauthBackend)
+		_, err = ob.verifySubjectToken(context.Background(), config, token)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "public key not found for key ID")
+	})
+
+	t.Run("fallback to decode without JWKS URI", func(t *testing.T) {
+		b, _ := getTestBackend(t)
+
+		// Create a token without signature verification
+		signer, err := jose.NewSigner(
+			jose.SigningKey{Algorithm: jose.RS256, Key: privateKey},
+			(&jose.SignerOptions{}).WithType("JWT"),
+		)
+		require.NoError(t, err)
+
+		claims := map[string]interface{}{
+			"iss":       "https://issuer.example.com",
+			"sub":       "user123",
+			"aud":       "https://resource.example.com",
+			"client_id": "client123",
+			"exp":       time.Now().Add(1 * time.Hour).Unix(),
+			"iat":       time.Now().Unix(),
+			"may_act": []map[string]interface{}{
+				{
+					"client_id": "actor-client",
+					"sub":       "actor-sub",
+				},
+			},
+		}
+
+		builder := jwt.Signed(signer).Claims(claims)
+		token, err := builder.CompactSerialize()
+		require.NoError(t, err)
+
+		// Config without JWKS URI - should fall back to decodeToken
+		config := &oauthConfig{
+			ClientID: "client123",
+		}
+
+		ob := b.(*oauthBackend)
+		result, err := ob.verifySubjectToken(context.Background(), config, token)
+		require.NoError(t, err)
+		assert.NotNil(t, result)
+		assert.Equal(t, "user123", result.Subject)
+	})
+
+	t.Run("expired token with JWKS verification", func(t *testing.T) {
+		b, _ := getTestBackend(t)
+
+		signer, err := jose.NewSigner(
+			jose.SigningKey{Algorithm: jose.RS256, Key: privateKey},
+			(&jose.SignerOptions{}).WithType("JWT").WithHeader("kid", keyID),
+		)
+		require.NoError(t, err)
+
+		// Create expired token
+		claims := map[string]interface{}{
+			"iss":       "https://issuer.example.com",
+			"sub":       "user123",
+			"aud":       "https://resource.example.com",
+			"client_id": "client123",
+			"exp":       time.Now().Add(-1 * time.Hour).Unix(), // Expired
+			"iat":       time.Now().Add(-2 * time.Hour).Unix(),
+			"may_act": []map[string]interface{}{
+				{
+					"client_id": "actor-client",
+					"sub":       "actor-sub",
+				},
+			},
+		}
+
+		builder := jwt.Signed(signer).Claims(claims)
+		token, err := builder.CompactSerialize()
+		require.NoError(t, err)
+
+		config := &oauthConfig{
+			ClientID:            "client123",
+			SubjectTokenJWKSURI: jwksServer.URL,
+		}
+
+		ob := b.(*oauthBackend)
+		_, err = ob.verifySubjectToken(context.Background(), config, token)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "JWT validation failed")
+	})
+}
 // Made with Bob

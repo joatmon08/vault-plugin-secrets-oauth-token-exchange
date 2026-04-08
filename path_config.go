@@ -17,6 +17,7 @@ const (
 type oauthConfig struct {
 	ClientID                   string `json:"client_id"`
 	ClientSecret               string `json:"client_secret"`
+	SubjectTokenJWKSURI        string `json:"subject_token_jwks_uri"`
 	IdentitySecretsEnginePath  string `json:"identity_secrets_engine_path"`
 	VaultAddr                  string `json:"vault_addr"`
 	VaultNamespace             string `json:"vault_namespace"`
@@ -41,6 +42,10 @@ func pathConfig(b *oauthBackend) []*framework.Path {
 					DisplayAttrs: &framework.DisplayAttributes{
 						Sensitive: true,
 					},
+				},
+				"subject_token_jwks_uri": {
+					Type:        framework.TypeString,
+					Description: "JWKS URI for verifying subject tokens (e.g., https://issuer/.well-known/jwks.json)",
 				},
 				"identity_secrets_engine_path": {
 					Type:        framework.TypeString,
@@ -112,6 +117,9 @@ func (b *oauthBackend) pathConfigRead(ctx context.Context, req *logical.Request,
 		"client_id": config.ClientID,
 	}
 	
+	if config.SubjectTokenJWKSURI != "" {
+		respData["subject_token_jwks_uri"] = config.SubjectTokenJWKSURI
+	}
 	if config.IdentitySecretsEnginePath != "" {
 		respData["identity_secrets_engine_path"] = config.IdentitySecretsEnginePath
 	}
@@ -146,6 +154,10 @@ func (b *oauthBackend) pathConfigWrite(ctx context.Context, req *logical.Request
 	config := &oauthConfig{
 		ClientID:     clientID,
 		ClientSecret: clientSecret,
+	}
+	
+	if jwksURI, ok := data.GetOk("subject_token_jwks_uri"); ok {
+		config.SubjectTokenJWKSURI = jwksURI.(string)
 	}
 	
 	// Set identity_secrets_engine_path with default value
@@ -222,13 +234,17 @@ You need to provide:
 - client_id: The OAuth 2.0 client ID
 - client_secret: The OAuth 2.0 client secret
 
+Optional configuration for subject token verification:
+- subject_token_jwks_uri: JWKS URI for verifying subject token signatures
+
 Optional Vault configuration for actor token verification:
 - identity_secrets_engine_path: Path to Vault identity secrets engine (default: 'identity')
 - vault_addr: Vault address for retrieving actor tokens
 - vault_namespace: Vault namespace (Vault Enterprise only)
 - vault_token: Vault token with access to the identity secrets engine
 
-Subject tokens are verified by decoding and validating the JWT.
+Subject tokens are verified by validating the JWT signature against the JWKS URI if provided,
+or by decoding and validating the JWT claims if no JWKS URI is configured.
 This secrets engine itself acts as the RFC 8693 token exchange endpoint.
 `
 

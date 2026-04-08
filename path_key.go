@@ -45,14 +45,14 @@ type expireableKey struct {
 // namedKey represents a named signing key
 type namedKey struct {
 	name             string
-	Algorithm        string              `json:"algorithm"`
-	VerificationTTL  time.Duration       `json:"verification_ttl"`
-	RotationPeriod   time.Duration       `json:"rotation_period"`
-	KeyRing          []*expireableKey    `json:"key_ring"`
-	SigningKey       *jose.JSONWebKey    `json:"signing_key"`
-	NextSigningKey   *jose.JSONWebKey    `json:"next_signing_key"`
-	NextRotation     time.Time           `json:"next_rotation"`
-	AllowedClientIDs []string            `json:"allowed_client_ids"`
+	Algorithm        string           `json:"algorithm"`
+	VerificationTTL  time.Duration    `json:"verification_ttl"`
+	RotationPeriod   time.Duration    `json:"rotation_period"`
+	KeyRing          []*expireableKey `json:"key_ring"`
+	SigningKey       *jose.JSONWebKey `json:"signing_key"`
+	NextSigningKey   *jose.JSONWebKey `json:"next_signing_key"`
+	NextRotation     time.Time        `json:"next_rotation"`
+	AllowedClientIDs []string         `json:"allowed_client_ids"`
 }
 
 // pathKey extends the Vault API with key management endpoints
@@ -213,7 +213,7 @@ func (b *oauthBackend) pathKeyCreateUpdate(ctx context.Context, req *logical.Req
 	// Generate initial signing key if this is a new key
 	if req.Operation == logical.CreateOperation {
 		key.name = name
-		
+
 		signingKey, err := generateJSONWebKey(key.Algorithm)
 		if err != nil {
 			return nil, fmt.Errorf("failed to generate signing key: %w", err)
@@ -221,6 +221,11 @@ func (b *oauthBackend) pathKeyCreateUpdate(ctx context.Context, req *logical.Req
 		key.SigningKey = signingKey
 		key.NextRotation = time.Now().Add(key.RotationPeriod)
 		key.KeyRing = []*expireableKey{}
+		
+		// Store the public key for JWKS endpoint
+		if err := storePublicKey(ctx, req.Storage, signingKey); err != nil {
+			return nil, fmt.Errorf("failed to store public key: %w", err)
+		}
 	}
 
 	// Store the key
@@ -430,7 +435,12 @@ func rotateNamedKey(ctx context.Context, s logical.Storage, name string, key *na
 	// Move current signing key to next signing key
 	if key.SigningKey != nil {
 		key.NextSigningKey = key.SigningKey
-		
+
+		// Store the public key for JWKS endpoint
+		if err := storePublicKey(ctx, s, key.SigningKey); err != nil {
+			return fmt.Errorf("failed to store public key: %w", err)
+		}
+
 		// Add to key ring with expiration
 		expireAt := time.Now().Add(key.VerificationTTL)
 		key.KeyRing = append(key.KeyRing, &expireableKey{
@@ -446,15 +456,26 @@ func rotateNamedKey(ctx context.Context, s logical.Storage, name string, key *na
 	}
 	key.SigningKey = newKey
 
+	// Store the new public key for JWKS endpoint
+	if err := storePublicKey(ctx, s, newKey); err != nil {
+		return fmt.Errorf("failed to store new public key: %w", err)
+	}
+
 	// Update next rotation time
 	key.NextRotation = time.Now().Add(key.RotationPeriod)
 
-	// Prune expired keys from key ring
+	// Prune expired keys from key ring and delete their public keys
 	now := time.Now()
 	validKeys := make([]*expireableKey, 0)
 	for _, k := range key.KeyRing {
 		if k.ExpireAt.After(now) {
 			validKeys = append(validKeys, k)
+		} else {
+			// Delete expired public key
+			if err := deletePublicKey(ctx, s, k.KeyID); err != nil {
+				// Log but don't fail rotation
+				continue
+			}
 		}
 	}
 	key.KeyRing = validKeys
@@ -466,6 +487,25 @@ func rotateNamedKey(ctx context.Context, s logical.Storage, name string, key *na
 	}
 
 	return s.Put(ctx, entry)
+}
+// storePublicKey stores the public portion of a key for JWKS retrieval
+func storePublicKey(ctx context.Context, s logical.Storage, jwk *jose.JSONWebKey) error {
+	if jwk == nil {
+		return fmt.Errorf("cannot store nil key")
+	}
+
+	publicKey := jwk.Public()
+	entry, err := logical.StorageEntryJSON("public_key/"+jwk.KeyID, &publicKey)
+	if err != nil {
+		return err
+	}
+
+	return s.Put(ctx, entry)
+}
+
+// deletePublicKey removes a public key from storage
+func deletePublicKey(ctx context.Context, s logical.Storage, keyID string) error {
+	return s.Delete(ctx, "public_key/"+keyID)
 }
 
 // Made with Bob
