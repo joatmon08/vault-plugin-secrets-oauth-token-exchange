@@ -57,10 +57,6 @@ func pathToken(b *oauthBackend) []*framework.Path {
 					Description: "Actor token to exchanged (obtained from identity/oidc/token/:name endpoint of Vault identity tokens)",
 					Required:    true,
 				},
-				"client_id": {
-					Type:        framework.TypeString,
-					Description: "OAuth 2.0 client ID that requests the token",
-				},
 				"audience": {
 					Type:        framework.TypeString,
 					Description: "Target audience for the token",
@@ -119,14 +115,11 @@ func (b *oauthBackend) pathTokenExchange(ctx context.Context, req *logical.Reque
 		return logical.ErrorResponse("configuration not found"), nil
 	}
 
+	// Use role name as client_id
+	clientID := roleName
+	
 	// Get parameters from request
-	var clientID, audience, scope string
-	if cid, ok := data.GetOk("client_id"); ok {
-		clientID = cid.(string)
-	} else {
-		clientID = config.ClientID
-	}
-
+	var audience, scope string
 	if aud, ok := data.GetOk("audience"); ok {
 		audience = aud.(string)
 	}
