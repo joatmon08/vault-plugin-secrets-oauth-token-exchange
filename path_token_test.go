@@ -110,19 +110,20 @@ func TestVerifySubjectToken(t *testing.T) {
 				ClientSecret: "test-secret",
 			}
 
-			mayAct, err := backend.verifySubjectToken(context.Background(), config, tc.token)
+			subjectTokenClaims, err := backend.verifySubjectToken(context.Background(), config, tc.token)
 
 			if tc.wantErr {
 				require.Error(t, err)
-				assert.Nil(t, mayAct)
+				assert.Nil(t, subjectTokenClaims)
 				if tc.errMsg != "" {
 					assert.Contains(t, err.Error(), tc.errMsg)
 				}
 			} else {
 				assert.NoError(t, err)
-				require.NotNil(t, mayAct)
-				assert.Equal(t, "actor", mayAct[0].ClientID)
-				assert.Equal(t, "actor-sub", mayAct[0].Subject)
+				require.NotNil(t, subjectTokenClaims)
+				assert.Equal(t, "user123", subjectTokenClaims.Subject)
+				assert.Equal(t, "actor", subjectTokenClaims.MayAct[0].ClientID)
+				assert.Equal(t, "actor-sub", subjectTokenClaims.MayAct[0].Subject)
 			}
 		})
 	}
@@ -426,6 +427,7 @@ func TestDecodeToken(t *testing.T) {
 		})
 	}
 }
+
 func TestGeneratePayload(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -438,13 +440,13 @@ func TestGeneratePayload(t *testing.T) {
 			token: &accessToken{
 				Issuer:   "http://127.0.0.1:8200/v1/identity/oidc",
 				Subject:  "52b1da4c-0a60-f23a-3384-1d5837af487e",
-				Audience: "test-client",
+				Audience: "helloworld-agent",
 				Expiry:   1775586454,
 				IssuedAt: 1775500054,
 				ClientID: "test-client",
 				Actors: map[string]interface{}{
-					"sub":       "52b1da4c-0a60-f23a-3384-1d5837af487e",
-					"client_id": "test-client",
+					"sub":       "11111111-1111-1111-1111-111111111111",
+					"client_id": "first-client",
 				},
 				Scope: "helloworld:read",
 			},
@@ -455,11 +457,17 @@ func TestGeneratePayload(t *testing.T) {
 				require.NoError(t, err)
 				assert.Equal(t, "http://127.0.0.1:8200/v1/identity/oidc", claims["iss"])
 				assert.Equal(t, "52b1da4c-0a60-f23a-3384-1d5837af487e", claims["sub"])
-				assert.Equal(t, "test-client", claims["aud"])
+				assert.Equal(t, "helloworld-agent", claims["aud"])
 				assert.Equal(t, float64(1775586454), claims["exp"])
 				assert.Equal(t, float64(1775500054), claims["iat"])
 				assert.Equal(t, "test-client", claims["client_id"])
 				assert.Equal(t, "helloworld:read", claims["scope"])
+
+				// Check act claim structure
+				act, ok := claims["act"].(map[string]interface{})
+				require.True(t, ok, "act should be a map")
+				assert.Equal(t, "11111111-1111-1111-1111-111111111111", act["sub"])
+				assert.Equal(t, "first-client", act["client_id"])
 			},
 		},
 		{
@@ -472,8 +480,8 @@ func TestGeneratePayload(t *testing.T) {
 				IssuedAt: 1775500054,
 				ClientID: "test-client",
 				Actors: map[string]interface{}{
-					"sub":       "52b1da4c-0a60-f23a-3384-1d5837af487e",
-					"client_id": "test-client",
+					"sub":       "11111111-1111-1111-1111-111111111111",
+					"client_id": "first-client",
 					"act": map[string]interface{}{
 						"sub":       "a1b2c3d4-5678-90ab-cdef-1234567890ab",
 						"client_id": "second-client",
@@ -495,8 +503,8 @@ func TestGeneratePayload(t *testing.T) {
 				// Check act claim structure
 				act, ok := claims["act"].(map[string]interface{})
 				require.True(t, ok, "act should be a map")
-				assert.Equal(t, "52b1da4c-0a60-f23a-3384-1d5837af487e", act["sub"])
-				assert.Equal(t, "test-client", act["client_id"])
+				assert.Equal(t, "11111111-1111-1111-1111-111111111111", act["sub"])
+				assert.Equal(t, "first-client", act["client_id"])
 
 				// Check nested act claim
 				nestedAct, ok := act["act"].(map[string]interface{})
@@ -516,7 +524,7 @@ func TestGeneratePayload(t *testing.T) {
 				ClientID: "test-client",
 				Actors: map[string]interface{}{
 					"sub":       "52b1da4c-0a60-f23a-3384-1d5837af487e",
-					"client_id": "test-client",
+					"client_id": "first-client",
 					"act": map[string]interface{}{
 						"sub":       "a1b2c3d4-5678-90ab-cdef-1234567890ab",
 						"client_id": "service-client-1",
@@ -538,7 +546,7 @@ func TestGeneratePayload(t *testing.T) {
 				act1, ok := claims["act"].(map[string]interface{})
 				require.True(t, ok)
 				assert.Equal(t, "52b1da4c-0a60-f23a-3384-1d5837af487e", act1["sub"])
-				assert.Equal(t, "test-client", act1["client_id"])
+				assert.Equal(t, "first-client", act1["client_id"])
 
 				// Check second level act
 				act2, ok := act1["act"].(map[string]interface{})
@@ -627,9 +635,10 @@ func TestSignPayload(t *testing.T) {
 					ClientID: "test-client",
 					Actors: map[string]interface{}{
 						"sub":       "52b1da4c-0a60-f23a-3384-1d5837af487e",
-						"client_id": "test-client",
+						"client_id": "first-client",
 						"act": map[string]interface{}{
-							"sub": "a1b2c3d4-5678-90ab-cdef-1234567890ab",
+							"sub":       "a1b2c3d4-5678-90ab-cdef-1234567890ab",
+							"client_id": "second-client",
 						},
 					},
 					Scope: "helloworld:read",
@@ -714,6 +723,10 @@ func TestPerformTokenExchange(t *testing.T) {
 							"client_id": "test-client",
 							"sub":       "52b1da4c-0a60-f23a-3384-1d5837af487e",
 						},
+						{
+							"client_id": "first-client",
+							"sub":       "a1b2c3d4-5678-90ab-cdef-1234567890ab",
+						},
 					},
 				})
 
@@ -728,11 +741,7 @@ func TestPerformTokenExchange(t *testing.T) {
 					"scope":     "helloworld:read",
 					"act": map[string]interface{}{
 						"sub":       "a1b2c3d4-5678-90ab-cdef-1234567890ab",
-						"client_id": "service-client-1",
-						"act": map[string]interface{}{
-							"sub":       "f9e8d7c6-b5a4-3210-fedc-ba9876543210",
-							"client_id": "service-client-2",
-						},
+						"client_id": "first-client",
 					},
 				})
 
@@ -772,14 +781,14 @@ func TestPerformTokenExchange(t *testing.T) {
 				// Verify nested act claims are preserved
 				act, ok := claims["act"].(map[string]interface{})
 				require.True(t, ok, "act claim should be present")
-				assert.Equal(t, "a1b2c3d4-5678-90ab-cdef-1234567890ab", act["sub"])
-				assert.Equal(t, "service-client-1", act["client_id"])
+				assert.Equal(t, "52b1da4c-0a60-f23a-3384-1d5837af487e", act["sub"])
+				assert.Equal(t, "test-client", act["client_id"])
 
 				// Verify nested act
 				nestedAct, ok := act["act"].(map[string]interface{})
 				require.True(t, ok, "nested act claim should be present")
-				assert.Equal(t, "f9e8d7c6-b5a4-3210-fedc-ba9876543210", nestedAct["sub"])
-				assert.Equal(t, "service-client-2", nestedAct["client_id"])
+				assert.Equal(t, "a1b2c3d4-5678-90ab-cdef-1234567890ab", nestedAct["sub"])
+				assert.Equal(t, "first-client", nestedAct["client_id"])
 			},
 		},
 		{
@@ -808,7 +817,6 @@ func TestPerformTokenExchange(t *testing.T) {
 					"client_id": "test-client",
 					"exp":       time.Now().Add(1 * time.Hour).Unix(),
 					"namespace": "root",
-					"scope":     "helloworld:read helloworld:write",
 					"act": map[string]interface{}{
 						"sub":       "a1b2c3d4-5678-90ab-cdef-1234567890ab",
 						"client_id": "service-client-1",
@@ -849,7 +857,12 @@ func TestPerformTokenExchange(t *testing.T) {
 				assert.Equal(t, "helloworld:read", scope)
 
 				// Verify 3 levels of nested act claims
-				act1, ok := claims["act"].(map[string]interface{})
+				act, ok := claims["act"].(map[string]interface{})
+				require.True(t, ok)
+				assert.Equal(t, "52b1da4c-0a60-f23a-3384-1d5837af487e", act["sub"])
+				assert.Equal(t, "test-client", act["client_id"])
+
+				act1, ok := act["act"].(map[string]interface{})
 				require.True(t, ok)
 				assert.Equal(t, "a1b2c3d4-5678-90ab-cdef-1234567890ab", act1["sub"])
 				assert.Equal(t, "service-client-1", act1["client_id"])

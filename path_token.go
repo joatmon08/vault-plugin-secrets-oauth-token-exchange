@@ -19,12 +19,17 @@ const (
 	tokenTypeAccessToken   = "urn:ietf:params:oauth:token-type:access_token"
 )
 
+type subjectTokenClaims struct {
+	MayAct []*mayActClaim `json:"may_act"`
+	jwt.Claims
+}
+
 type mayActClaim struct {
 	ClientID string `json:"client_id"`
 	Subject  string `json:"sub"`
 }
 
-type actorClaims struct {
+type actorTokenClaims struct {
 	ClientID string                 `json:"client_id"`
 	Subject  string                 `json:"sub"`
 	Actors   map[string]interface{} `json:"act"`
@@ -208,7 +213,7 @@ func (k *namedKey) signPayload(payload []byte) (string, error) {
 // This secrets engine itself acts as the token exchange endpoint
 func (b *oauthBackend) performTokenExchange(ctx context.Context, req *logical.Request, config *oauthConfig, role *roleEntry, subjectToken, actorToken, grantType, clientID, audience, scope string) (map[string]interface{}, error) {
 	// Verify subject token
-	subjectTokenMayActClaims, err := b.verifySubjectToken(ctx, config, subjectToken)
+	subjectTokenClaims, err := b.verifySubjectToken(ctx, config, subjectToken)
 	if err != nil {
 		return nil, fmt.Errorf("subject token verification failed: %w", err)
 	}
@@ -221,13 +226,14 @@ func (b *oauthBackend) performTokenExchange(ctx context.Context, req *logical.Re
 
 	// Verify top-level actor has permission to act on behalf of subject
 	var hasPermission bool
-	for i := 0; i < len(subjectTokenMayActClaims); i++ {
-		if subjectTokenMayActClaims[i].ClientID == actorTokenClaims.ClientID && subjectTokenMayActClaims[i].Subject == actorTokenClaims.Subject {
+	subjectTokenMayActClaims := subjectTokenClaims.MayAct
+	for _, claim := range subjectTokenMayActClaims {
+		if claim.ClientID == actorTokenClaims.ClientID && claim.Subject == actorTokenClaims.Subject {
 			hasPermission = true
 			break
 		}
 	}
-	
+
 	if !hasPermission {
 		return nil, fmt.Errorf("actor token does not have permission to act on behalf of subject token")
 	}
@@ -256,13 +262,17 @@ func (b *oauthBackend) performTokenExchange(ctx context.Context, req *logical.Re
 	now := time.Now()
 	token := &accessToken{
 		Issuer:   config.ClientID, // Use client_id as issuer
-		Subject:  actorTokenClaims.Subject,
+		Subject:  subjectTokenClaims.Subject,
 		Audience: audience,
 		Expiry:   now.Add(expiry).Unix(),
 		IssuedAt: now.Unix(),
 		ClientID: clientID,
-		Actors:   actorTokenClaims.Actors,
-		Scope:    scope,
+		Actors: map[string]interface{}{
+			"sub":       actorTokenClaims.Subject,
+			"client_id": actorTokenClaims.ClientID,
+			"act":       actorTokenClaims.Actors,
+		},
+		Scope: scope,
 	}
 
 	// Generate and sign the payload
@@ -337,7 +347,7 @@ func decodeToken(token string) (map[string]interface{}, error) {
 	return allClaims, nil
 }
 
-func (b *oauthBackend) decodeActorToken(token string) (*actorClaims, error) {
+func (b *oauthBackend) decodeActorToken(token string) (*actorTokenClaims, error) {
 	claims, err := decodeToken(token)
 	if err != nil {
 		return nil, err
@@ -346,7 +356,7 @@ func (b *oauthBackend) decodeActorToken(token string) (*actorClaims, error) {
 	clientID, _ := claims["client_id"]
 	subject, _ := claims["sub"]
 
-	claim := &actorClaims{
+	claim := &actorTokenClaims{
 		Subject:  subject.(string),
 		ClientID: clientID.(string),
 	}
@@ -359,7 +369,7 @@ func (b *oauthBackend) decodeActorToken(token string) (*actorClaims, error) {
 }
 
 // verifySubjectToken verifies the subject token by decoding the JWT
-func (b *oauthBackend) verifySubjectToken(ctx context.Context, config *oauthConfig, token string) ([]*mayActClaim, error) {
+func (b *oauthBackend) verifySubjectToken(ctx context.Context, config *oauthConfig, token string) (*subjectTokenClaims, error) {
 	claims, err := decodeToken(token)
 	if err != nil {
 		return nil, err
@@ -376,7 +386,7 @@ func (b *oauthBackend) verifySubjectToken(ctx context.Context, config *oauthConf
 		return nil, fmt.Errorf("JWT missing required 'may_act' claim")
 	}
 
-	var validatedMayActClaims []*mayActClaim
+	var mayActClaims []*mayActClaim
 
 	for _, item := range mayActArray {
 		mayActMap, ok := item.(map[string]interface{})
@@ -394,13 +404,20 @@ func (b *oauthBackend) verifySubjectToken(ctx context.Context, config *oauthConf
 			return nil, fmt.Errorf("JWT missing required 'may_act' claim with 'sub'")
 		}
 
-		validatedMayActClaims = append(validatedMayActClaims, &mayActClaim{
+		mayActClaims = append(mayActClaims, &mayActClaim{
 			ClientID: clientID.(string),
 			Subject:  sub.(string),
 		})
 	}
 
-	return validatedMayActClaims, nil
+	subjectTokenClaims := &subjectTokenClaims{
+		MayAct: mayActClaims,
+		Claims: jwt.Claims{
+			Subject: claims["sub"].(string),
+		},
+	}
+
+	return subjectTokenClaims, nil
 }
 
 // verifyActorToken introspects an actor token to verify it's still active
