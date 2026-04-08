@@ -23,5 +23,4 @@ func newClient(config *oauthConfig) (*oauthClient, error) {
 	}, nil
 }
 
-
 // Made with Bob

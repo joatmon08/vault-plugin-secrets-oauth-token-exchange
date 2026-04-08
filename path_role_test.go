@@ -77,17 +77,17 @@ func TestRole(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			b, s := getTestBackend(t)
-			
+
 			// Create a test key first
 			createTestKey(t, b, s, "test-key")
-			
+
 			var roleName string
 			if tc.wantErr {
 				roleName = "test-role-error"
 			} else {
 				roleName = tc.expected["name"].(string)
 			}
-			
+
 			testRoleCreate(t, b, s, roleName, tc.role, tc.wantErr)
 
 			if !tc.wantErr {
@@ -376,7 +376,7 @@ func testRoleRead(t *testing.T, b logical.Backend, s logical.Storage, name strin
 // createTestKey is a helper function to create a test signing key
 func createTestKey(t *testing.T, b logical.Backend, s logical.Storage, name string) {
 	t.Helper()
-	
+
 	resp, err := b.HandleRequest(context.Background(), &logical.Request{
 		Operation: logical.CreateOperation,
 		Path:      "key/" + name,
@@ -385,11 +385,11 @@ func createTestKey(t *testing.T, b logical.Backend, s logical.Storage, name stri
 		},
 		Storage: s,
 	})
-	
+
 	if err != nil {
 		t.Fatal(err)
 	}
-	
+
 	if resp != nil && resp.IsError() {
 		t.Fatal(resp.Error())
 	}

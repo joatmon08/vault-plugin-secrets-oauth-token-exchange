@@ -117,7 +117,7 @@ func (b *oauthBackend) pathTokenExchange(ctx context.Context, req *logical.Reque
 
 	// Use role name as client_id
 	clientID := roleName
-	
+
 	// Get parameters from request
 	var audience, scope string
 	if aud, ok := data.GetOk("audience"); ok {
@@ -252,6 +252,16 @@ func (b *oauthBackend) performTokenExchange(ctx context.Context, req *logical.Re
 		expiry = key.VerificationTTL
 	}
 
+	// Generate actor claim for access token
+	actors := map[string]interface{}{
+		"sub":       actorTokenClaims.Subject,
+		"client_id": actorTokenClaims.ClientID,
+	}
+
+	if actorTokenClaims.Actors != nil {
+		actors["act"] = actorTokenClaims.Actors
+	}
+
 	// Generate the access token
 	now := time.Now()
 	token := &accessToken{
@@ -261,12 +271,8 @@ func (b *oauthBackend) performTokenExchange(ctx context.Context, req *logical.Re
 		Expiry:   now.Add(expiry).Unix(),
 		IssuedAt: now.Unix(),
 		ClientID: clientID,
-		Actors: map[string]interface{}{
-			"sub":       actorTokenClaims.Subject,
-			"client_id": actorTokenClaims.ClientID,
-			"act":       actorTokenClaims.Actors,
-		},
-		Scope: scope,
+		Actors:   actors,
+		Scope:    scope,
 	}
 
 	// Generate and sign the payload
@@ -455,7 +461,7 @@ func fetchJWKS(uri string) (*jose.JSONWebKeySet, error) {
 func (b *oauthBackend) verifySubjectToken(ctx context.Context, config *oauthConfig, token string) (*subjectTokenClaims, error) {
 	var claims map[string]interface{}
 	var err error
-	
+
 	// If JWKS URI is configured, verify the signature and decode
 	if config.SubjectTokenJWKSURI != "" {
 		claims, err = verifyTokenWithJWKS(config.SubjectTokenJWKSURI, token)

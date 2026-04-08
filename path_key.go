@@ -221,7 +221,7 @@ func (b *oauthBackend) pathKeyCreateUpdate(ctx context.Context, req *logical.Req
 		key.SigningKey = signingKey
 		key.NextRotation = time.Now().Add(key.RotationPeriod)
 		key.KeyRing = []*expireableKey{}
-		
+
 		// Store the public key for JWKS endpoint
 		if err := storePublicKey(ctx, req.Storage, signingKey); err != nil {
 			return nil, fmt.Errorf("failed to store public key: %w", err)
@@ -488,6 +488,7 @@ func rotateNamedKey(ctx context.Context, s logical.Storage, name string, key *na
 
 	return s.Put(ctx, entry)
 }
+
 // storePublicKey stores the public portion of a key for JWKS retrieval
 func storePublicKey(ctx context.Context, s logical.Storage, jwk *jose.JSONWebKey) error {
 	if jwk == nil {

@@ -15,13 +15,13 @@ const (
 // oauthConfig includes the configuration required to instantiate
 // a new OAuth client for token exchange
 type oauthConfig struct {
-	ClientID                   string `json:"client_id"`
-	ClientSecret               string `json:"client_secret"`
-	SubjectTokenJWKSURI        string `json:"subject_token_jwks_uri"`
-	IdentitySecretsEnginePath  string `json:"identity_secrets_engine_path"`
-	VaultAddr                  string `json:"vault_addr"`
-	VaultNamespace             string `json:"vault_namespace"`
-	VaultToken                 string `json:"vault_token"`
+	ClientID                  string `json:"client_id"`
+	ClientSecret              string `json:"client_secret"`
+	SubjectTokenJWKSURI       string `json:"subject_token_jwks_uri"`
+	IdentitySecretsEnginePath string `json:"identity_secrets_engine_path"`
+	VaultAddr                 string `json:"vault_addr"`
+	VaultNamespace            string `json:"vault_namespace"`
+	VaultToken                string `json:"vault_token"`
 }
 
 // pathConfig extends the Vault API with a `/config` endpoint for the backend
@@ -116,7 +116,7 @@ func (b *oauthBackend) pathConfigRead(ctx context.Context, req *logical.Request,
 	respData := map[string]interface{}{
 		"client_id": config.ClientID,
 	}
-	
+
 	if config.SubjectTokenJWKSURI != "" {
 		respData["subject_token_jwks_uri"] = config.SubjectTokenJWKSURI
 	}
@@ -132,7 +132,7 @@ func (b *oauthBackend) pathConfigRead(ctx context.Context, req *logical.Request,
 	if config.VaultToken != "" {
 		respData["vault_token_set"] = true
 	}
-	
+
 	return &logical.Response{
 		Data: respData,
 	}, nil
@@ -155,18 +155,18 @@ func (b *oauthBackend) pathConfigWrite(ctx context.Context, req *logical.Request
 		ClientID:     clientID,
 		ClientSecret: clientSecret,
 	}
-	
+
 	if jwksURI, ok := data.GetOk("subject_token_jwks_uri"); ok {
 		config.SubjectTokenJWKSURI = jwksURI.(string)
 	}
-	
+
 	// Set identity_secrets_engine_path with default value
 	if identityPath, ok := data.GetOk("identity_secrets_engine_path"); ok {
 		config.IdentitySecretsEnginePath = identityPath.(string)
 	} else {
 		config.IdentitySecretsEnginePath = "identity"
 	}
-	
+
 	if vaultAddr, ok := data.GetOk("vault_addr"); ok {
 		config.VaultAddr = vaultAddr.(string)
 	}

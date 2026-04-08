@@ -708,6 +708,79 @@ func TestPerformTokenExchange(t *testing.T) {
 		check   func(t *testing.T, result map[string]interface{})
 	}{
 		{
+			name: "successful token exchange with act claim",
+			setup: func(t *testing.T, b *oauthBackend, storage logical.Storage) (string, string) {
+				// Create subject token with may_act claim
+				subjectToken := createJWTWithClaims(map[string]interface{}{
+					"iss":       "http://localhost:8200/v1/identity/oidc/provider/test",
+					"sub":       "064a698a-4133-7443-b89d-aecd885aa3ee",
+					"aud":       "lF7iYit6FaxpfyOMICqJLzDrQsCYQYsZ",
+					"client_id": "lF7iYit6FaxpfyOMICqJLzDrQsCYQYsZ",
+					"exp":       time.Now().Add(1 * time.Hour).Unix(),
+					"namespace": "root",
+					"may_act": []map[string]string{
+						{
+							"client_id": "test-client",
+							"sub":       "52b1da4c-0a60-f23a-3384-1d5837af487e",
+						},
+					},
+				})
+
+				// Create actor token with nested act claims
+				actorToken := createJWTWithClaims(map[string]interface{}{
+					"iss":       "http://127.0.0.1:8200/v1/identity/oidc",
+					"sub":       "52b1da4c-0a60-f23a-3384-1d5837af487e",
+					"aud":       "test-client",
+					"client_id": "test-client",
+					"exp":       time.Now().Add(1 * time.Hour).Unix(),
+					"namespace": "root",
+					"scope":     "helloworld:read",
+				})
+
+				return subjectToken, actorToken
+			},
+			wantErr: false,
+			check: func(t *testing.T, result map[string]interface{}) {
+				// Verify response structure
+				assert.Contains(t, result, "access_token")
+				assert.Contains(t, result, "issued_token_type")
+				assert.Contains(t, result, "token_type")
+				assert.Equal(t, "Bearer", result["token_type"])
+				assert.Equal(t, tokenTypeAccessToken, result["issued_token_type"])
+
+				// Parse and verify the access token
+				accessToken := result["access_token"].(string)
+				parsedToken, err := jwt.ParseSigned(accessToken)
+				require.NoError(t, err)
+
+				var claims map[string]interface{}
+				err = parsedToken.UnsafeClaimsWithoutVerification(&claims)
+				require.NoError(t, err)
+
+				// Verify standard claims are preserved
+				aud, ok := claims["aud"].(string)
+				require.True(t, ok, "aud claim should be present")
+				assert.Equal(t, "helloworld-agent", aud)
+
+				clientID, ok := claims["client_id"].(string)
+				require.True(t, ok, "client_id claim should be present")
+				assert.Equal(t, "test-client", clientID)
+
+				scope, ok := claims["scope"].(string)
+				require.True(t, ok, "scope claim should be present")
+				assert.Equal(t, "helloworld:read", scope)
+
+				// Verify nested act claims are preserved
+				act, ok := claims["act"].(map[string]interface{})
+				require.True(t, ok, "act claim should be present")
+				assert.Equal(t, "52b1da4c-0a60-f23a-3384-1d5837af487e", act["sub"])
+				assert.Equal(t, "test-client", act["client_id"])
+
+				// Verify nested act is not present
+				require.NotContains(t, act, "act", "nested act claim should not be present")
+			},
+		},
+		{
 			name: "successful token exchange with nested act claims",
 			setup: func(t *testing.T, b *oauthBackend, storage logical.Storage) (string, string) {
 				// Create subject token with may_act claim
@@ -963,7 +1036,6 @@ func TestPerformTokenExchange(t *testing.T) {
 	}
 }
 
-
 // TestVerifySubjectTokenWithJWKS tests subject token verification using JWKS
 func TestVerifySubjectTokenWithJWKS(t *testing.T) {
 	// Generate a test RSA key pair
@@ -971,7 +1043,7 @@ func TestVerifySubjectTokenWithJWKS(t *testing.T) {
 	require.NoError(t, err)
 
 	keyID := "test-key-id"
-	
+
 	// Create a JWK for the public key
 	publicJWK := jose.JSONWebKey{
 		Key:       &privateKey.PublicKey,
@@ -1245,4 +1317,5 @@ func TestVerifySubjectTokenWithJWKS(t *testing.T) {
 		assert.Contains(t, err.Error(), "JWT validation failed")
 	})
 }
+
 // Made with Bob

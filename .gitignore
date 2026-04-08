@@ -35,3 +35,5 @@ go.work.sum
 .secrets.baseline
 
 fixtures/
+bin/
+pkg/

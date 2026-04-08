@@ -424,7 +424,7 @@ func TestKey_RotateWithVerificationTTL(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, resp)
 	require.False(t, resp.IsError())
-	
+
 	// Verify the rotate response includes the updated verification_ttl
 	assert.Equal(t, int64(3600), resp.Data["verification_ttl"])
 
