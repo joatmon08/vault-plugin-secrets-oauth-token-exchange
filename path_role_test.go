@@ -290,6 +290,50 @@ func TestRoleDefaultValues(t *testing.T) {
 	assert.Equal(t, int64(86400), resp.Data["max_ttl"])
 }
 
+func TestRoleDefaultIssuer(t *testing.T) {
+	b, s := getTestBackend(t)
+
+	// Create a test key first
+	createTestKey(t, b, s, "test-key")
+
+	// Create role without specifying issuer
+	role := map[string]interface{}{
+		"key":     "test-key",
+		"ttl":     3600,
+		"max_ttl": 86400,
+	}
+
+	resp, err := b.HandleRequest(context.Background(), &logical.Request{
+		Operation:  logical.CreateOperation,
+		Path:       "role/test-role-default-issuer",
+		Data:       role,
+		Storage:    s,
+		MountPoint: "oauth-token-exchange/",
+	})
+
+	assert.NoError(t, err)
+	assert.NotNil(t, resp)
+	assert.False(t, resp.IsError())
+
+	// Verify warning is present
+	assert.NotEmpty(t, resp.Warnings)
+	assert.Contains(t, resp.Warnings[0], "No issuer provided")
+	assert.Contains(t, resp.Warnings[0], "/v1/oauth-token-exchange/")
+
+	// Read and verify the role has the default issuer
+	readResp, err := b.HandleRequest(context.Background(), &logical.Request{
+		Operation: logical.ReadOperation,
+		Path:      "role/test-role-default-issuer",
+		Storage:   s,
+	})
+	assert.NoError(t, err)
+	assert.NotNil(t, readResp)
+	assert.False(t, readResp.IsError())
+
+	// Verify the issuer is set to the default path-based value
+	assert.Equal(t, "/v1/oauth-token-exchange/", readResp.Data["issuer"])
+}
+
 func TestRoleWithNonExistentKey(t *testing.T) {
 	b, s := getTestBackend(t)
 

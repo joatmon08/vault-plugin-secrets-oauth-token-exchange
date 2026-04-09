@@ -33,6 +33,7 @@ type actorTokenClaims struct {
 	ClientID string                 `json:"client_id"`
 	Subject  string                 `json:"sub"`
 	Actors   map[string]interface{} `json:"act"`
+	Scope    string                 `json:"scope"`
 }
 
 // pathToken extends the Vault API with token exchange endpoints
@@ -279,6 +280,10 @@ func (b *oauthBackend) performTokenExchange(ctx context.Context, req *logical.Re
 		"client_id": clientID,
 	}
 
+	if actorTokenClaims.Scope != "" {
+		actors["scope"] = scope
+	}
+
 	if actorTokenClaims.Actors != nil {
 		actors["act"] = actorTokenClaims.Actors
 	}
@@ -380,6 +385,10 @@ func (b *oauthBackend) decodeActorToken(token string) (*actorTokenClaims, error)
 	claim := &actorTokenClaims{
 		Subject:  subject.(string),
 		ClientID: clientID.(string),
+	}
+
+	if scope, ok := claims["scope"]; ok {
+		claim.Scope = scope.(string)
 	}
 
 	if actors, ok := claims["act"]; ok {

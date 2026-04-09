@@ -825,6 +825,11 @@ func TestPerformTokenExchange(t *testing.T) {
 				assert.Equal(t, "52b1da4c-0a60-f23a-3384-1d5837af487e", act["sub"])
 				assert.Equal(t, "test-client", act["client_id"])
 
+				// Verify scope is included in act claim from actor token
+				actScope, ok := act["scope"].(string)
+				require.True(t, ok, "scope should be present in act claim")
+				assert.Equal(t, "helloworld:read", actScope)
+
 				// Verify nested act is not present
 				require.NotContains(t, act, "act", "nested act claim should not be present")
 			},
@@ -910,6 +915,11 @@ func TestPerformTokenExchange(t *testing.T) {
 				require.True(t, ok, "act claim should be present")
 				assert.Equal(t, "52b1da4c-0a60-f23a-3384-1d5837af487e", act["sub"])
 				assert.Equal(t, "test-client", act["client_id"])
+
+				// Verify scope is included in act claim from actor token
+				actScope, ok := act["scope"].(string)
+				require.True(t, ok, "scope should be present in act claim")
+				assert.Equal(t, "helloworld:read", actScope)
 
 				// Verify nested act
 				nestedAct, ok := act["act"].(map[string]interface{})
@@ -1278,6 +1288,13 @@ func TestPathTokenExchange(t *testing.T) {
 				assert.Equal(t, "test-role", claims["client_id"])
 				assert.Equal(t, "read:data", claims["scope"])
 				assert.Contains(t, claims, "act")
+
+				// Verify scope is included in act claim from actor token
+				act, ok := claims["act"].(map[string]interface{})
+				require.True(t, ok, "act claim should be present")
+				actScope, ok := act["scope"].(string)
+				require.True(t, ok, "scope should be present in act claim")
+				assert.Equal(t, "read:data", actScope)
 			},
 		},
 		{
@@ -1471,6 +1488,13 @@ func TestPathTokenExchange(t *testing.T) {
 				assert.Equal(t, "test-audience", claims["aud"])
 				assert.Equal(t, "read:data", claims["scope"])
 				assert.Contains(t, claims, "act")
+
+				// Verify scope is included in act claim from actor token
+				act, ok := claims["act"].(map[string]interface{})
+				require.True(t, ok, "act claim should be present")
+				actScope, ok := act["scope"].(string)
+				require.True(t, ok, "scope should be present in act claim")
+				assert.Equal(t, "read:data", actScope)
 
 				// Verify actor claim also has the custom client_id
 				actClaim := claims["act"].(map[string]interface{})

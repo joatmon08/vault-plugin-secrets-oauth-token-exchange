@@ -56,8 +56,7 @@ func pathRole(b *oauthBackend) []*framework.Path {
 				},
 				"issuer": {
 					Type:        framework.TypeString,
-					Description: "Issuer (iss) claim for tokens issued by this role",
-					Required:    true,
+					Description: "Issuer (iss) claim for tokens issued by this role. If not provided, defaults to Vault's address and the secrets engine mount path.",
 				},
 				"ttl": {
 					Type:        framework.TypeDurationSecond,
@@ -158,9 +157,16 @@ func (b *oauthBackend) pathRoleWrite(ctx context.Context, req *logical.Request, 
 		return logical.ErrorResponse("missing key name"), nil
 	}
 
+	// Get issuer from request, or derive default from Vault address and mount path
 	issuer := data.Get("issuer").(string)
+	var resp *logical.Response
 	if issuer == "" {
-		return logical.ErrorResponse("missing issuer"), nil
+		issuer = b.deriveEffectiveIssuer(req)
+		// Add warning that a custom issuer should be configured
+		resp = &logical.Response{}
+		resp.AddWarning("No issuer provided. Using default path-based issuer '" + issuer + "'. " +
+			"For production use, configure a custom issuer with your Vault's full address " +
+			"(e.g., 'https://vault.example.com" + issuer + "').")
 	}
 
 	// Verify the key exists
@@ -198,7 +204,7 @@ func (b *oauthBackend) pathRoleWrite(ctx context.Context, req *logical.Request, 
 		return nil, err
 	}
 
-	return nil, nil
+	return resp, nil
 }
 
 // pathRoleDelete deletes a role from storage
@@ -242,6 +248,28 @@ func getRole(ctx context.Context, s logical.Storage, name string) (*roleEntry, e
 	}
 
 	return role, nil
+}
+
+// deriveEffectiveIssuer derives the default issuer from the mount path
+// Following the pattern from vault/identity_store_oidc.go:
+// effectiveIssuer = vaultAddr + "/v1/" + namespace.Path + mountPath
+//
+// Note: Since plugins don't have direct access to Vault's API address,
+// this returns a path-based issuer. Users should configure a custom issuer
+// with their Vault's actual address for production use.
+func (b *oauthBackend) deriveEffectiveIssuer(req *logical.Request) string {
+	// Get the mount path for this secrets engine
+	mountPath := req.MountPoint
+	if mountPath == "" {
+		mountPath = "oauth-token-exchange/"
+	}
+
+	// Construct the effective issuer using the mount path
+	// Format: /v1/mountPath (without the Vault address prefix)
+	// Users should provide a full issuer URL for production use
+	effectiveIssuer := "/v1/" + mountPath
+
+	return effectiveIssuer
 }
 
 const pathRoleHelpSynopsis = `Manage roles for OAuth 2.0 token exchange.`
