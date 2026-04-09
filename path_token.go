@@ -20,7 +20,7 @@ const (
 )
 
 type subjectTokenClaims struct {
-	MayAct []*mayActClaim `json:"may_act"`
+	MayAct []*mayActClaim         `json:"may_act"`
 	jwt.Claims
 }
 
@@ -212,6 +212,11 @@ func (k *namedKey) signPayload(payload []byte) (string, error) {
 // performTokenExchange executes the RFC 8693 token exchange
 // This secrets engine itself acts as the token exchange endpoint
 func (b *oauthBackend) performTokenExchange(ctx context.Context, req *logical.Request, config *oauthConfig, role *roleEntry, subjectToken, actorToken, grantType, clientID, audience, scope string) (map[string]interface{}, error) {
+	// Check if entity ID is present
+	if req.EntityID == "" {
+		return nil, fmt.Errorf("no entity associated with the request's token")
+	}
+
 	// Verify subject token
 	subjectTokenClaims, err := b.verifySubjectToken(ctx, config, subjectToken)
 	if err != nil {
@@ -224,18 +229,19 @@ func (b *oauthBackend) performTokenExchange(ctx context.Context, req *logical.Re
 		return nil, fmt.Errorf("actor token decoding failed: %w", err)
 	}
 
-	// Verify top-level actor has permission to act on behalf of subject
+	// Verify the entity making the request (req.EntityID) has permission to act on behalf of subject
+	// The may_act claim in the subject token lists entities that are allowed to act
 	var hasPermission bool
 	subjectTokenMayActClaims := subjectTokenClaims.MayAct
 	for _, claim := range subjectTokenMayActClaims {
-		if claim.ClientID == actorTokenClaims.ClientID && claim.Subject == actorTokenClaims.Subject {
+		if claim.ClientID == clientID && claim.Subject == req.EntityID {
 			hasPermission = true
 			break
 		}
 	}
 
 	if !hasPermission {
-		return nil, fmt.Errorf("actor token does not have permission to act on behalf of subject token")
+		return nil, fmt.Errorf("entity %q does not have permission to act on behalf of subject token", req.EntityID)
 	}
 
 	// Load the signing key referenced by the role
@@ -260,8 +266,8 @@ func (b *oauthBackend) performTokenExchange(ctx context.Context, req *logical.Re
 
 	// Generate actor claim for access token
 	actors := map[string]interface{}{
-		"sub":       actorTokenClaims.Subject,
-		"client_id": actorTokenClaims.ClientID,
+		"sub":       req.EntityID,
+		"client_id": clientID,
 	}
 
 	if actorTokenClaims.Actors != nil {

@@ -49,8 +49,8 @@ vault write sts/token/second-client \
    audience="end-user" \
    scope="helloworld:read"
 
-vault delete sts/role/second-client
-vault delete sts/role/test-client
-vault delete sts/key/test
-vault delete sts/config
-vault secrets disable sts
+# vault delete sts/role/second-client
+# vault delete sts/role/test-client
+# vault delete sts/key/test
+# vault delete sts/config
+# vault secrets disable sts

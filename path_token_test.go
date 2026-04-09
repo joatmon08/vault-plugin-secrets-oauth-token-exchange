@@ -709,14 +709,51 @@ func TestSignPayload(t *testing.T) {
 
 func TestPerformTokenExchange(t *testing.T) {
 	tests := []struct {
-		name    string
-		setup   func(t *testing.T, b *oauthBackend, storage logical.Storage) (subjectToken, actorToken string)
-		wantErr bool
-		errMsg  string
-		check   func(t *testing.T, result map[string]interface{})
+		name     string
+		setup    func(t *testing.T, b *oauthBackend, storage logical.Storage) (subjectToken, actorToken string)
+		entityID string
+		wantErr  bool
+		errMsg   string
+		check    func(t *testing.T, result map[string]interface{})
 	}{
 		{
-			name: "successful token exchange with act claim",
+			name: "missing entity ID",
+			setup: func(t *testing.T, b *oauthBackend, storage logical.Storage) (string, string) {
+				// Create subject token with may_act claim
+				subjectToken := createJWTWithClaims(map[string]interface{}{
+					"iss":       "http://localhost:8200/v1/identity/oidc/provider/test",
+					"sub":       "064a698a-4133-7443-b89d-aecd885aa3ee",
+					"aud":       "lF7iYit6FaxpfyOMICqJLzDrQsCYQYsZ",
+					"client_id": "lF7iYit6FaxpfyOMICqJLzDrQsCYQYsZ",
+					"exp":       time.Now().Add(1 * time.Hour).Unix(),
+					"namespace": "root",
+					"may_act": []map[string]string{
+						{
+							"client_id": "test-client",
+							"sub":       "52b1da4c-0a60-f23a-3384-1d5837af487e",
+						},
+					},
+				})
+
+				// Create actor token
+				actorToken := createJWTWithClaims(map[string]interface{}{
+					"iss":       "http://127.0.0.1:8200/v1/identity/oidc",
+					"sub":       "52b1da4c-0a60-f23a-3384-1d5837af487e",
+					"aud":       "test-client",
+					"client_id": "test-client",
+					"exp":       time.Now().Add(1 * time.Hour).Unix(),
+					"namespace": "root",
+				})
+
+				return subjectToken, actorToken
+			},
+			entityID: "", // Empty entity ID to trigger error
+			wantErr:  true,
+			errMsg:   "no entity associated with the request's token",
+		},
+		{
+			name:     "successful token exchange with act claim",
+			entityID: "52b1da4c-0a60-f23a-3384-1d5837af487e",
 			setup: func(t *testing.T, b *oauthBackend, storage logical.Storage) (string, string) {
 				// Create subject token with may_act claim
 				subjectToken := createJWTWithClaims(map[string]interface{}{
@@ -789,7 +826,8 @@ func TestPerformTokenExchange(t *testing.T) {
 			},
 		},
 		{
-			name: "successful token exchange with nested act claims",
+			name:     "successful token exchange with nested act claims",
+			entityID: "52b1da4c-0a60-f23a-3384-1d5837af487e",
 			setup: func(t *testing.T, b *oauthBackend, storage logical.Storage) (string, string) {
 				// Create subject token with may_act claim
 				subjectToken := createJWTWithClaims(map[string]interface{}{
@@ -814,8 +852,8 @@ func TestPerformTokenExchange(t *testing.T) {
 				// Create actor token with nested act claims
 				actorToken := createJWTWithClaims(map[string]interface{}{
 					"iss":       "http://127.0.0.1:8200/v1/identity/oidc",
-					"sub":       "52b1da4c-0a60-f23a-3384-1d5837af487e",
-					"aud":       "test-client",
+					"sub":       "064a698a-4133-7443-b89d-aecd885aa3ee",
+					"aud":       "helloworld-agent",
 					"client_id": "test-client",
 					"exp":       time.Now().Add(1 * time.Hour).Unix(),
 					"namespace": "root",
@@ -873,7 +911,8 @@ func TestPerformTokenExchange(t *testing.T) {
 			},
 		},
 		{
-			name: "successful token exchange with deeply nested act claims (3 levels)",
+			name:     "successful token exchange with deeply nested act claims (3 levels)",
+			entityID: "52b1da4c-0a60-f23a-3384-1d5837af487e",
 			setup: func(t *testing.T, b *oauthBackend, storage logical.Storage) (string, string) {
 				subjectToken := createJWTWithClaims(map[string]interface{}{
 					"iss":       "http://localhost:8200/v1/identity/oidc/provider/test",
@@ -893,7 +932,7 @@ func TestPerformTokenExchange(t *testing.T) {
 				// Create actor token with 3 levels of nested act claims
 				actorToken := createJWTWithClaims(map[string]interface{}{
 					"iss":       "http://127.0.0.1:8200/v1/identity/oidc",
-					"sub":       "52b1da4c-0a60-f23a-3384-1d5837af487e",
+					"sub":       "064a698a-4133-7443-b89d-aecd885aa3ee",
 					"aud":       "test-client",
 					"client_id": "test-client",
 					"exp":       time.Now().Add(1 * time.Hour).Unix(),
@@ -1017,7 +1056,10 @@ func TestPerformTokenExchange(t *testing.T) {
 			// Perform token exchange
 			result, err := backend.performTokenExchange(
 				context.Background(),
-				&logical.Request{Storage: storage},
+				&logical.Request{
+					Storage:  storage,
+					EntityID: tc.entityID,
+				},
 				config,
 				role,
 				subjectToken,
