@@ -40,6 +40,9 @@ func backend() *oauthBackend {
 				"config",
 				"role/*",
 			},
+			Unauthenticated: []string{
+				".well-known/keys",
+			},
 		},
 		Paths: framework.PathAppend(
 			pathConfig(&b),

@@ -9,7 +9,6 @@ import (
 
 	"github.com/go-jose/go-jose/v3"
 	"github.com/go-jose/go-jose/v3/jwt"
-	"github.com/hashicorp/vault/api"
 	"github.com/hashicorp/vault/sdk/framework"
 	"github.com/hashicorp/vault/sdk/logical"
 )
@@ -128,9 +127,9 @@ func (b *oauthBackend) pathTokenExchange(ctx context.Context, req *logical.Reque
 		scope = scp.(string)
 	}
 
-	// Verify the actor token if vault configuration is available
-	if config.VaultAddr != "" && config.IdentitySecretsEnginePath != "" {
-		if err = b.verifyActorToken(ctx, req, config, actorToken, clientID); err != nil {
+	// Verify the actor token if JWKS URI is configured in the role
+	if role.ActorTokenJWKSURI != "" {
+		if err = b.verifyActorToken(ctx, req, role, actorToken); err != nil {
 			return nil, fmt.Errorf("actor token verification failed: %w", err)
 		}
 	}
@@ -185,7 +184,14 @@ func (k *namedKey) signPayload(payload []byte) (string, error) {
 		Algorithm: jose.SignatureAlgorithm(k.Algorithm),
 	}
 
-	signer, err := jose.NewSigner(signingKey, &jose.SignerOptions{})
+	// Add key ID to the JWT header
+	signerOptions := &jose.SignerOptions{}
+	signerOptions = signerOptions.WithType("JWT")
+	if k.SigningKey.KeyID != "" {
+		signerOptions = signerOptions.WithHeader("kid", k.SigningKey.KeyID)
+	}
+
+	signer, err := jose.NewSigner(signingKey, signerOptions)
 	if err != nil {
 		return "", fmt.Errorf("failed to create signer: %w", err)
 	}
@@ -521,60 +527,16 @@ func (b *oauthBackend) verifySubjectToken(ctx context.Context, config *oauthConf
 	return subjectTokenClaims, nil
 }
 
-// verifyActorToken introspects an actor token to verify it's still active
-func (b *oauthBackend) verifyActorToken(ctx context.Context, req *logical.Request, config *oauthConfig, actorToken string, clientID string) error {
-	if config.VaultToken == "" {
-		return fmt.Errorf("vault_token not configured - required to verify actor tokens")
+// verifyActorToken verifies an actor token using JWKS
+func (b *oauthBackend) verifyActorToken(ctx context.Context, req *logical.Request, role *roleEntry, actorToken string) error {
+	if role.ActorTokenJWKSURI == "" {
+		return fmt.Errorf("actor_token_jwks_uri not configured for role")
 	}
 
-	if config.VaultAddr == "" {
-		return fmt.Errorf("vault_addr not configured - required to verify actor tokens")
-	}
-
-	if config.IdentitySecretsEnginePath == "" {
-		return fmt.Errorf("identity_secrets_engine_path not configured")
-	}
-
-	// Create a Vault API client
-	vaultConfig := api.DefaultConfig()
-	vaultConfig.Address = config.VaultAddr
-
-	client, err := api.NewClient(vaultConfig)
+	// Verify the token using JWKS
+	_, err := verifyTokenWithJWKS(role.ActorTokenJWKSURI, actorToken)
 	if err != nil {
-		return fmt.Errorf("failed to create Vault client: %w", err)
-	}
-
-	// Set the token and namespace if provided
-	client.SetToken(config.VaultToken)
-	if config.VaultNamespace != "" {
-		client.SetNamespace(config.VaultNamespace)
-	}
-
-	// Introspect the token to verify it's still active
-	// API: POST /identity/oidc/introspect (PUT and POST are synonyms in Vault)
-	introspectPath := fmt.Sprintf("%s/oidc/introspect", config.IdentitySecretsEnginePath)
-	introspectData := map[string]interface{}{
-		"token":     actorToken,
-		"client_id": clientID,
-	}
-
-	introspectResp, err := client.Logical().Write(introspectPath, introspectData)
-	if err != nil {
-		return fmt.Errorf("failed to introspect actor token: %w", err)
-	}
-
-	if introspectResp == nil || introspectResp.Data == nil {
-		return fmt.Errorf("no data returned from token introspection")
-	}
-
-	// Check if token is active
-	active, ok := introspectResp.Data["active"].(bool)
-	if !ok {
-		return fmt.Errorf("invalid introspection response: missing 'active' field")
-	}
-
-	if !active {
-		return fmt.Errorf("actor token is not active")
+		return fmt.Errorf("failed to verify actor token with JWKS: %w", err)
 	}
 
 	return nil

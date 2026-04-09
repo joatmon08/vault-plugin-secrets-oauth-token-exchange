@@ -15,22 +15,27 @@ const (
 
 // roleEntry defines the data required for a Vault role to perform token exchange
 type roleEntry struct {
-	Name   string        `json:"name"`
-	Key    string        `json:"key"`
-	Issuer string        `json:"issuer"`
-	TTL    time.Duration `json:"ttl"`
-	MaxTTL time.Duration `json:"max_ttl"`
+	Name              string        `json:"name"`
+	Key               string        `json:"key"`
+	Issuer            string        `json:"issuer"`
+	TTL               time.Duration `json:"ttl"`
+	MaxTTL            time.Duration `json:"max_ttl"`
+	ActorTokenJWKSURI string        `json:"actor_token_jwks_uri"`
 }
 
 // toResponseData returns response data for a role
 func (r *roleEntry) toResponseData() map[string]interface{} {
-	return map[string]interface{}{
+	data := map[string]interface{}{
 		"name":    r.Name,
 		"key":     r.Key,
 		"issuer":  r.Issuer,
 		"ttl":     int64(r.TTL.Seconds()),
 		"max_ttl": int64(r.MaxTTL.Seconds()),
 	}
+	if r.ActorTokenJWKSURI != "" {
+		data["actor_token_jwks_uri"] = r.ActorTokenJWKSURI
+	}
+	return data
 }
 
 // pathRole extends the Vault API with a `/role` endpoint for the backend
@@ -63,6 +68,10 @@ func pathRole(b *oauthBackend) []*framework.Path {
 					Type:        framework.TypeDurationSecond,
 					Description: "Maximum TTL for tokens issued by this role",
 					Default:     86400,
+				},
+				"actor_token_jwks_uri": {
+					Type:        framework.TypeString,
+					Description: "JWKS URI for verifying actor tokens (e.g., https://vault-addr/v1/identity/oidc/.well-known/keys)",
 				},
 			},
 			Operations: map[logical.Operation]framework.OperationHandler{
@@ -169,6 +178,10 @@ func (b *oauthBackend) pathRoleWrite(ctx context.Context, req *logical.Request, 
 		Issuer: issuer,
 		TTL:    time.Duration(data.Get("ttl").(int)) * time.Second,
 		MaxTTL: time.Duration(data.Get("max_ttl").(int)) * time.Second,
+	}
+
+	if actorJWKSURI, ok := data.GetOk("actor_token_jwks_uri"); ok {
+		role.ActorTokenJWKSURI = actorJWKSURI.(string)
 	}
 
 	// Validate TTL values

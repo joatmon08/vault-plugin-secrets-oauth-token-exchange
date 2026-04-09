@@ -130,148 +130,156 @@ func TestVerifySubjectToken(t *testing.T) {
 }
 
 func TestVerifyActorToken(t *testing.T) {
+	// Generate a test RSA key pair for signing tokens
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	require.NoError(t, err)
+
+	// Create a signer
+	signer, err := jose.NewSigner(
+		jose.SigningKey{Algorithm: jose.RS256, Key: privateKey},
+		(&jose.SignerOptions{}).WithType("JWT").WithHeader("kid", "test-key-id"),
+	)
+	require.NoError(t, err)
+
+	// Create valid token claims
+	now := time.Now()
+	validClaims := map[string]interface{}{
+		"iss":       "https://vault.example.com",
+		"sub":       "test-subject",
+		"aud":       "test-audience",
+		"exp":       now.Add(1 * time.Hour).Unix(),
+		"iat":       now.Unix(),
+		"client_id": "test-client",
+	}
+
+	// Create a valid signed token
+	validToken, err := jwt.Signed(signer).Claims(validClaims).CompactSerialize()
+	require.NoError(t, err)
+
+	// Create an expired token
+	expiredClaims := map[string]interface{}{
+		"iss":       "https://vault.example.com",
+		"sub":       "test-subject",
+		"aud":       "test-audience",
+		"exp":       now.Add(-1 * time.Hour).Unix(),
+		"iat":       now.Add(-2 * time.Hour).Unix(),
+		"client_id": "test-client",
+	}
+	expiredToken, err := jwt.Signed(signer).Claims(expiredClaims).CompactSerialize()
+	require.NoError(t, err)
+
 	tests := []struct {
-		name           string
-		config         *oauthConfig
-		actorToken     string
-		clientID       string
-		mockResponse   map[string]interface{}
-		mockStatusCode int
-		wantErr        bool
-		errMsg         string
+		name       string
+		role       *roleEntry
+		actorToken string
+		setupJWKS  bool
+		wantErr    bool
+		errMsg     string
 	}{
 		{
-			name: "valid active token",
-			config: &oauthConfig{
-				VaultAddr:                 "", // Will be set to mock server URL
-				VaultToken:                "test-token",
-				IdentitySecretsEnginePath: "identity",
+			name: "valid token with JWKS verification",
+			role: &roleEntry{
+				Name:              "test-role",
+				ActorTokenJWKSURI: "", // Will be set to mock server URL
 			},
-			actorToken: "valid-actor-token",
-			clientID:   "test-client",
-			mockResponse: map[string]interface{}{
-				"active": true,
-			},
-			mockStatusCode: http.StatusOK,
-			wantErr:        false,
+			actorToken: validToken,
+			setupJWKS:  true,
+			wantErr:    false,
 		},
 		{
-			name: "inactive token",
-			config: &oauthConfig{
-				VaultAddr:                 "", // Will be set to mock server URL
-				VaultToken:                "test-token",
-				IdentitySecretsEnginePath: "identity",
+			name: "expired token",
+			role: &roleEntry{
+				Name:              "test-role",
+				ActorTokenJWKSURI: "", // Will be set to mock server URL
 			},
-			actorToken: "inactive-actor-token",
-			clientID:   "test-client",
-			mockResponse: map[string]interface{}{
-				"active": false,
-			},
-			mockStatusCode: http.StatusOK,
-			wantErr:        true,
-			errMsg:         "actor token is not active",
-		},
-		{
-			name: "missing vault_token",
-			config: &oauthConfig{
-				VaultAddr:                 "http://localhost:8200",
-				VaultToken:                "",
-				IdentitySecretsEnginePath: "identity",
-			},
-			actorToken: "test-token",
-			clientID:   "test-client",
+			actorToken: expiredToken,
+			setupJWKS:  true,
 			wantErr:    true,
-			errMsg:     "vault_token not configured",
+			errMsg:     "validation failed",
 		},
 		{
-			name: "missing vault_addr",
-			config: &oauthConfig{
-				VaultAddr:                 "",
-				VaultToken:                "test-token",
-				IdentitySecretsEnginePath: "identity",
+			name: "missing actor_token_jwks_uri",
+			role: &roleEntry{
+				Name:              "test-role",
+				ActorTokenJWKSURI: "",
 			},
-			actorToken: "test-token",
-			clientID:   "test-client",
+			actorToken: validToken,
+			setupJWKS:  false,
 			wantErr:    true,
-			errMsg:     "vault_addr not configured",
+			errMsg:     "actor_token_jwks_uri not configured",
 		},
 		{
-			name: "missing identity_secrets_engine_path",
-			config: &oauthConfig{
-				VaultAddr:                 "http://localhost:8200",
-				VaultToken:                "test-token",
-				IdentitySecretsEnginePath: "",
+			name: "invalid token format",
+			role: &roleEntry{
+				Name:              "test-role",
+				ActorTokenJWKSURI: "", // Will be set to mock server URL
 			},
-			actorToken: "test-token",
-			clientID:   "test-client",
+			actorToken: "invalid-token",
+			setupJWKS:  true,
 			wantErr:    true,
-			errMsg:     "identity_secrets_engine_path not configured",
+			errMsg:     "failed to parse JWT",
 		},
 		{
-			name: "missing active field in response",
-			config: &oauthConfig{
-				VaultAddr:                 "", // Will be set to mock server URL
-				VaultToken:                "test-token",
-				IdentitySecretsEnginePath: "identity",
+			name: "valid token with Vault identity JWKS format (multiple keys)",
+			role: &roleEntry{
+				Name:              "test-role",
+				ActorTokenJWKSURI: "", // Will be set to mock server URL
 			},
-			actorToken: "test-token",
-			clientID:   "test-client",
-			mockResponse: map[string]interface{}{
-				"some_other_field": "value",
-			},
-			mockStatusCode: http.StatusOK,
-			wantErr:        true,
-			errMsg:         "missing 'active' field",
-		},
-		{
-			name: "with vault namespace",
-			config: &oauthConfig{
-				VaultAddr:                 "", // Will be set to mock server URL
-				VaultToken:                "test-token",
-				VaultNamespace:            "test-namespace",
-				IdentitySecretsEnginePath: "identity",
-			},
-			actorToken: "valid-actor-token",
-			clientID:   "test-client",
-			mockResponse: map[string]interface{}{
-				"active": true,
-			},
-			mockStatusCode: http.StatusOK,
-			wantErr:        false,
+			actorToken: validToken,
+			setupJWKS:  true,
+			wantErr:    false,
 		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			// Create mock HTTP server if we need to test API calls
+			// Create mock JWKS server if needed
 			var mockServer *httptest.Server
-			if tc.mockResponse != nil {
+			if tc.setupJWKS {
 				mockServer = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-					// Verify the request (Vault client uses PUT for Write operations)
-					assert.Equal(t, "PUT", r.Method)
-					assert.Contains(t, r.URL.Path, "/identity/oidc/introspect")
+					// Verify the request
+					assert.Equal(t, "GET", r.Method)
 
-					// Check for namespace header if configured
-					if tc.config.VaultNamespace != "" {
-						assert.Equal(t, tc.config.VaultNamespace, r.Header.Get("X-Vault-Namespace"))
+					// Create JWKS response with the public key
+					publicKey := privateKey.Public()
+					jwk := jose.JSONWebKey{
+						Key:       publicKey,
+						KeyID:     "test-key-id",
+						Algorithm: string(jose.RS256),
+						Use:       "sig",
 					}
 
-					// Check for token header
-					assert.Equal(t, tc.config.VaultToken, r.Header.Get("X-Vault-Token"))
+					var jwks jose.JSONWebKeySet
 
-					// Return mock response
+					// For the Vault identity JWKS format test, include multiple keys
+					if tc.name == "valid token with Vault identity JWKS format (multiple keys)" {
+						// Generate another key to simulate multiple keys in JWKS
+						otherPrivateKey, _ := rsa.GenerateKey(rand.Reader, 2048)
+						otherPublicKey := otherPrivateKey.Public()
+						otherJwk := jose.JSONWebKey{
+							Key:       otherPublicKey,
+							KeyID:     "other-key-id",
+							Algorithm: string(jose.RS256),
+							Use:       "sig",
+						}
+						jwks = jose.JSONWebKeySet{
+							Keys: []jose.JSONWebKey{otherJwk, jwk}, // Our key is second
+						}
+					} else {
+						jwks = jose.JSONWebKeySet{
+							Keys: []jose.JSONWebKey{jwk},
+						}
+					}
+
+					// Return JWKS response
 					w.Header().Set("Content-Type", "application/json")
-					w.WriteHeader(tc.mockStatusCode)
-
-					response := map[string]interface{}{
-						"data": tc.mockResponse,
-					}
-					json.NewEncoder(w).Encode(response)
+					w.WriteHeader(http.StatusOK)
+					json.NewEncoder(w).Encode(jwks)
 				}))
 				defer mockServer.Close()
 
 				// Set the mock server URL
-				tc.config.VaultAddr = mockServer.URL
+				tc.role.ActorTokenJWKSURI = mockServer.URL
 			}
 
 			// Create backend
@@ -282,7 +290,7 @@ func TestVerifyActorToken(t *testing.T) {
 			req := &logical.Request{}
 
 			// Call verifyActorToken
-			err := backend.verifyActorToken(context.Background(), req, tc.config, tc.actorToken, tc.clientID)
+			err := backend.verifyActorToken(context.Background(), req, tc.role, tc.actorToken)
 
 			// Check results
 			if tc.wantErr {
