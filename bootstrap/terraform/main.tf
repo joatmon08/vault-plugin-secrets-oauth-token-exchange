@@ -38,6 +38,10 @@ resource "vault_policy" "actor_token" {
 path "identity/oidc/token/${each.key}" {
   capabilities = ["read"]
 }
+
+path "sts/token/${each.key}" {
+  capabilities = ["read"]
+}
 EOT
 }
 
@@ -114,6 +118,9 @@ resource "vault_identity_oidc_scope" "may_act" {
   "may_act": [{
     "client_id": "test-client",
     "sub": "${vault_identity_entity.client_agents["test-client"].id}"
+  },{
+    "client_id": "second-client",
+    "sub": "${vault_identity_entity.client_agents["second-client"].id}"
   }]
 }
 EOT
@@ -136,20 +143,6 @@ resource "vault_policy" "agent_oidc_client" {
   policy = <<EOT
 path "identity/oidc/client/${vault_identity_oidc_provider.provider.name}" {
   capabilities = [ "read" ]
-}
-EOT
-}
-
-resource "vault_policy" "agent_token_verify" {
-  name = "agent-token-verify"
-
-  policy = <<EOT
-path "identity/oidc/introspect" {
-  capabilities = ["update"]
-}
-
-path "identity/oidc/introspect/*" {
-  capabilities = ["read"]
 }
 EOT
 }

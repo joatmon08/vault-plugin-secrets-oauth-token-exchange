@@ -20,7 +20,7 @@ const (
 )
 
 type subjectTokenClaims struct {
-	MayAct []*mayActClaim         `json:"may_act"`
+	MayAct []*mayActClaim `json:"may_act"`
 	jwt.Claims
 }
 
@@ -56,6 +56,10 @@ func pathToken(b *oauthBackend) []*framework.Path {
 					Description: "Actor token to exchanged (obtained from identity/oidc/token/:name endpoint of Vault identity tokens)",
 					Required:    true,
 				},
+				"client_id": {
+					Type:        framework.TypeString,
+					Description: "Client ID to use for token exchange. If not provided, the role name will be used.",
+				},
 				"audience": {
 					Type:        framework.TypeString,
 					Description: "Target audience for the token",
@@ -66,7 +70,7 @@ func pathToken(b *oauthBackend) []*framework.Path {
 				},
 			},
 			Operations: map[logical.Operation]framework.OperationHandler{
-				logical.UpdateOperation: &framework.PathOperation{
+				logical.ReadOperation: &framework.PathOperation{
 					Callback: b.pathTokenExchange,
 					Summary:  "Exchange tokens using RFC 8693",
 				},
@@ -114,8 +118,13 @@ func (b *oauthBackend) pathTokenExchange(ctx context.Context, req *logical.Reque
 		return logical.ErrorResponse("configuration not found"), nil
 	}
 
-	// Use role name as client_id
-	clientID := roleName
+	// Get client_id from request, or use role name as fallback
+	var clientID string
+	if cid, ok := data.GetOk("client_id"); ok {
+		clientID = cid.(string)
+	} else {
+		clientID = roleName
+	}
 
 	// Get parameters from request
 	var audience, scope string
@@ -278,7 +287,7 @@ func (b *oauthBackend) performTokenExchange(ctx context.Context, req *logical.Re
 	now := time.Now()
 	token := &accessToken{
 		Issuer:   role.Issuer,
-		Subject:  actorTokenClaims.Subject,
+		Subject:  subjectTokenClaims.Subject,
 		Audience: audience,
 		Expiry:   now.Add(expiry).Unix(),
 		IssuedAt: now.Unix(),

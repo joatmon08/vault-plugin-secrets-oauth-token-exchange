@@ -807,6 +807,10 @@ func TestPerformTokenExchange(t *testing.T) {
 				require.True(t, ok, "aud claim should be present")
 				assert.Equal(t, "helloworld-agent", aud)
 
+				sub, ok := claims["sub"].(string)
+				require.True(t, ok, "sub claim should be present")
+				assert.Equal(t, "064a698a-4133-7443-b89d-aecd885aa3ee", sub)
+
 				clientID, ok := claims["client_id"].(string)
 				require.True(t, ok, "client_id claim should be present")
 				assert.Equal(t, "test-client", clientID)
@@ -889,6 +893,10 @@ func TestPerformTokenExchange(t *testing.T) {
 				require.True(t, ok, "aud claim should be present")
 				assert.Equal(t, "helloworld-agent", aud)
 
+				sub, ok := claims["sub"].(string)
+				require.True(t, ok, "sub claim should be present")
+				assert.Equal(t, "064a698a-4133-7443-b89d-aecd885aa3ee", sub)
+
 				clientID, ok := claims["client_id"].(string)
 				require.True(t, ok, "client_id claim should be present")
 				assert.Equal(t, "test-client", clientID)
@@ -967,6 +975,10 @@ func TestPerformTokenExchange(t *testing.T) {
 				aud, ok := claims["aud"].(string)
 				require.True(t, ok, "aud claim should be present")
 				assert.Equal(t, "helloworld-agent", aud)
+
+				sub, ok := claims["sub"].(string)
+				require.True(t, ok, "sub claim should be present")
+				assert.Equal(t, "064a698a-4133-7443-b89d-aecd885aa3ee", sub)
 
 				clientID, ok := claims["client_id"].(string)
 				require.True(t, ok, "client_id claim should be present")
@@ -1080,6 +1092,549 @@ func TestPerformTokenExchange(t *testing.T) {
 				require.NotNil(t, result)
 				if tc.check != nil {
 					tc.check(t, result)
+				}
+			}
+		})
+	}
+}
+
+// TestPathTokenExchange tests the token exchange endpoint via HandleRequest
+func TestPathTokenExchange(t *testing.T) {
+	tests := []struct {
+		name     string
+		setup    func(t *testing.T, b logical.Backend, storage logical.Storage) (subjectToken, actorToken string)
+		roleName string
+		data     map[string]interface{}
+		entityID string
+		wantErr  bool
+		errMsg   string
+		check    func(t *testing.T, resp *logical.Response)
+	}{
+		{
+			name: "missing subject_token parameter",
+			setup: func(t *testing.T, b logical.Backend, storage logical.Storage) (string, string) {
+				return "", ""
+			},
+			data: map[string]interface{}{
+				"role":        "test-role",
+				"actor_token": "test-actor-token",
+			},
+			wantErr: true,
+			errMsg:  "missing subject_token",
+		},
+		{
+			name: "missing actor_token parameter",
+			setup: func(t *testing.T, b logical.Backend, storage logical.Storage) (string, string) {
+				return "", ""
+			},
+			data: map[string]interface{}{
+				"role":          "test-role",
+				"subject_token": "test-subject-token",
+			},
+			wantErr: true,
+			errMsg:  "missing actor_token",
+		},
+		{
+			name: "role not found",
+			setup: func(t *testing.T, b logical.Backend, storage logical.Storage) (string, string) {
+				// Create config
+				config := &oauthConfig{
+					ClientID:     "test-client",
+					ClientSecret: "test-secret",
+				}
+				entry, err := logical.StorageEntryJSON("config", config)
+				require.NoError(t, err)
+				err = storage.Put(context.Background(), entry)
+				require.NoError(t, err)
+
+				subjectToken := createJWTWithClaims(map[string]interface{}{
+					"iss":       "test-issuer",
+					"sub":       "user123",
+					"aud":       "test",
+					"client_id": "test-client",
+					"exp":       time.Now().Add(1 * time.Hour).Unix(),
+					"may_act":   []map[string]string{{"client_id": "test-role", "sub": "entity-123"}},
+				})
+
+				actorToken := createJWTWithClaims(map[string]interface{}{
+					"iss":       "test-issuer",
+					"sub":       "entity-123",
+					"aud":       "test",
+					"client_id": "test-role",
+					"exp":       time.Now().Add(1 * time.Hour).Unix(),
+				})
+
+				return subjectToken, actorToken
+			},
+			entityID: "entity-123",
+			wantErr:  true,
+			errMsg:   "role not found",
+		},
+		{
+			name:     "successful token exchange via ReadOperation",
+			roleName: "test-role",
+			entityID: "52b1da4c-0a60-f23a-3384-1d5837af487e",
+			setup: func(t *testing.T, b logical.Backend, storage logical.Storage) (string, string) {
+				// Create config
+				config := &oauthConfig{
+					ClientID:     "test-client",
+					ClientSecret: "test-secret",
+				}
+				entry, err := logical.StorageEntryJSON("config", config)
+				require.NoError(t, err)
+				err = storage.Put(context.Background(), entry)
+				require.NoError(t, err)
+
+				// Create a test key
+				privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+				require.NoError(t, err)
+
+				jwk := &jose.JSONWebKey{
+					Key:       privateKey,
+					KeyID:     "test-key-id",
+					Algorithm: string(jose.RS256),
+				}
+
+				key := &namedKey{
+					name:             "test-key",
+					Algorithm:        string(jose.RS256),
+					SigningKey:       jwk,
+					VerificationTTL:  24 * time.Hour,
+					AllowedClientIDs: []string{"*"},
+				}
+
+				keyEntry, err := logical.StorageEntryJSON(keyStoragePath+"test-key", key)
+				require.NoError(t, err)
+				err = storage.Put(context.Background(), keyEntry)
+				require.NoError(t, err)
+
+				// Create a test role
+				role := &roleEntry{
+					Key:    "test-key",
+					Issuer: "http://127.0.0.1:8200/v1/identity/oidc",
+					TTL:    1 * time.Hour,
+				}
+
+				roleEntry, err := logical.StorageEntryJSON(roleStoragePrefix+"test-role", role)
+				require.NoError(t, err)
+				err = storage.Put(context.Background(), roleEntry)
+				require.NoError(t, err)
+
+				// Create tokens
+				subjectToken := createJWTWithClaims(map[string]interface{}{
+					"iss":       "http://localhost:8200/v1/identity/oidc/provider/test",
+					"sub":       "064a698a-4133-7443-b89d-aecd885aa3ee",
+					"aud":       "lF7iYit6FaxpfyOMICqJLzDrQsCYQYsZ",
+					"client_id": "lF7iYit6FaxpfyOMICqJLzDrQsCYQYsZ",
+					"exp":       time.Now().Add(1 * time.Hour).Unix(),
+					"may_act": []map[string]string{
+						{
+							"client_id": "test-role",
+							"sub":       "52b1da4c-0a60-f23a-3384-1d5837af487e",
+						},
+					},
+				})
+
+				actorToken := createJWTWithClaims(map[string]interface{}{
+					"iss":       "http://127.0.0.1:8200/v1/identity/oidc",
+					"sub":       "52b1da4c-0a60-f23a-3384-1d5837af487e",
+					"aud":       "test-audience",
+					"client_id": "test-role",
+					"exp":       time.Now().Add(1 * time.Hour).Unix(),
+					"scope":     "read:data",
+				})
+
+				return subjectToken, actorToken
+			},
+			data: map[string]interface{}{
+				"role":     "test-role",
+				"audience": "test-audience",
+				"scope":    "read:data",
+			},
+			wantErr: false,
+			check: func(t *testing.T, resp *logical.Response) {
+				require.NotNil(t, resp)
+				require.NotNil(t, resp.Data)
+
+				// Verify response structure
+				assert.Contains(t, resp.Data, "access_token")
+				assert.Contains(t, resp.Data, "issued_token_type")
+				assert.Contains(t, resp.Data, "token_type")
+				assert.Contains(t, resp.Data, "expires_in")
+				assert.Equal(t, "Bearer", resp.Data["token_type"])
+				assert.Equal(t, tokenTypeAccessToken, resp.Data["issued_token_type"])
+
+				// Parse and verify the access token
+				accessToken := resp.Data["access_token"].(string)
+				parsedToken, err := jwt.ParseSigned(accessToken)
+				require.NoError(t, err)
+
+				var claims map[string]interface{}
+				err = parsedToken.UnsafeClaimsWithoutVerification(&claims)
+				require.NoError(t, err)
+
+				// Verify claims
+				assert.Equal(t, "test-audience", claims["aud"])
+				assert.Equal(t, "test-role", claims["client_id"])
+				assert.Equal(t, "read:data", claims["scope"])
+				assert.Contains(t, claims, "act")
+			},
+		},
+		{
+			name:     "successful token exchange with optional parameters",
+			roleName: "test-role",
+			entityID: "52b1da4c-0a60-f23a-3384-1d5837af487e",
+			setup: func(t *testing.T, b logical.Backend, storage logical.Storage) (string, string) {
+				// Create config
+				config := &oauthConfig{
+					ClientID:     "test-client",
+					ClientSecret: "test-secret",
+				}
+				entry, err := logical.StorageEntryJSON("config", config)
+				require.NoError(t, err)
+				err = storage.Put(context.Background(), entry)
+				require.NoError(t, err)
+
+				// Create a test key
+				privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+				require.NoError(t, err)
+
+				jwk := &jose.JSONWebKey{
+					Key:       privateKey,
+					KeyID:     "test-key-id",
+					Algorithm: string(jose.RS256),
+				}
+
+				key := &namedKey{
+					name:             "test-key",
+					Algorithm:        string(jose.RS256),
+					SigningKey:       jwk,
+					VerificationTTL:  24 * time.Hour,
+					AllowedClientIDs: []string{"*"},
+				}
+
+				keyEntry, err := logical.StorageEntryJSON(keyStoragePath+"test-key", key)
+				require.NoError(t, err)
+				err = storage.Put(context.Background(), keyEntry)
+				require.NoError(t, err)
+
+				// Create a test role
+				role := &roleEntry{
+					Key:    "test-key",
+					Issuer: "http://127.0.0.1:8200/v1/identity/oidc",
+					TTL:    1 * time.Hour,
+				}
+
+				roleEntry, err := logical.StorageEntryJSON(roleStoragePrefix+"test-role", role)
+				require.NoError(t, err)
+				err = storage.Put(context.Background(), roleEntry)
+				require.NoError(t, err)
+
+				// Create tokens
+				subjectToken := createJWTWithClaims(map[string]interface{}{
+					"iss":       "http://localhost:8200/v1/identity/oidc/provider/test",
+					"sub":       "064a698a-4133-7443-b89d-aecd885aa3ee",
+					"aud":       "lF7iYit6FaxpfyOMICqJLzDrQsCYQYsZ",
+					"client_id": "lF7iYit6FaxpfyOMICqJLzDrQsCYQYsZ",
+					"exp":       time.Now().Add(1 * time.Hour).Unix(),
+					"may_act": []map[string]string{
+						{
+							"client_id": "test-role",
+							"sub":       "52b1da4c-0a60-f23a-3384-1d5837af487e",
+						},
+					},
+				})
+
+				actorToken := createJWTWithClaims(map[string]interface{}{
+					"iss":       "http://127.0.0.1:8200/v1/identity/oidc",
+					"sub":       "52b1da4c-0a60-f23a-3384-1d5837af487e",
+					"aud":       "default-audience",
+					"client_id": "test-role",
+					"exp":       time.Now().Add(1 * time.Hour).Unix(),
+				})
+
+				return subjectToken, actorToken
+			},
+			wantErr: false,
+			check: func(t *testing.T, resp *logical.Response) {
+				require.NotNil(t, resp)
+				require.NotNil(t, resp.Data)
+				assert.Contains(t, resp.Data, "access_token")
+			},
+		},
+		{
+			name:     "successful token exchange with custom client_id",
+			roleName: "test-role",
+			entityID: "52b1da4c-0a60-f23a-3384-1d5837af487e",
+			setup: func(t *testing.T, b logical.Backend, storage logical.Storage) (string, string) {
+				// Create config
+				config := &oauthConfig{
+					ClientID:     "test-client",
+					ClientSecret: "test-secret",
+				}
+				entry, err := logical.StorageEntryJSON("config", config)
+				require.NoError(t, err)
+				err = storage.Put(context.Background(), entry)
+				require.NoError(t, err)
+
+				// Create a test key
+				privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+				require.NoError(t, err)
+
+				jwk := &jose.JSONWebKey{
+					Key:       privateKey,
+					KeyID:     "test-key-id",
+					Algorithm: string(jose.RS256),
+				}
+
+				key := &namedKey{
+					name:             "test-key",
+					Algorithm:        string(jose.RS256),
+					SigningKey:       jwk,
+					VerificationTTL:  24 * time.Hour,
+					AllowedClientIDs: []string{"*"},
+				}
+
+				keyEntry, err := logical.StorageEntryJSON(keyStoragePath+"test-key", key)
+				require.NoError(t, err)
+				err = storage.Put(context.Background(), keyEntry)
+				require.NoError(t, err)
+
+				// Create a test role
+				role := &roleEntry{
+					Key:    "test-key",
+					Issuer: "http://127.0.0.1:8200/v1/identity/oidc",
+					TTL:    1 * time.Hour,
+				}
+
+				roleEntry, err := logical.StorageEntryJSON(roleStoragePrefix+"test-role", role)
+				require.NoError(t, err)
+				err = storage.Put(context.Background(), roleEntry)
+				require.NoError(t, err)
+
+				// Create tokens with custom client_id
+				subjectToken := createJWTWithClaims(map[string]interface{}{
+					"iss":       "http://localhost:8200/v1/identity/oidc/provider/test",
+					"sub":       "064a698a-4133-7443-b89d-aecd885aa3ee",
+					"aud":       "lF7iYit6FaxpfyOMICqJLzDrQsCYQYsZ",
+					"client_id": "lF7iYit6FaxpfyOMICqJLzDrQsCYQYsZ",
+					"exp":       time.Now().Add(1 * time.Hour).Unix(),
+					"may_act": []map[string]string{
+						{
+							"client_id": "custom-client-id",
+							"sub":       "52b1da4c-0a60-f23a-3384-1d5837af487e",
+						},
+					},
+				})
+
+				actorToken := createJWTWithClaims(map[string]interface{}{
+					"iss":       "http://127.0.0.1:8200/v1/identity/oidc",
+					"sub":       "52b1da4c-0a60-f23a-3384-1d5837af487e",
+					"aud":       "test-audience",
+					"client_id": "test-client",
+					"exp":       time.Now().Add(1 * time.Hour).Unix(),
+					"scope":     "read:data",
+				})
+
+				return subjectToken, actorToken
+			},
+			data: map[string]interface{}{
+				"role":      "test-role",
+				"client_id": "custom-client-id",
+				"audience":  "test-audience",
+				"scope":     "read:data",
+			},
+			wantErr: false,
+			check: func(t *testing.T, resp *logical.Response) {
+				require.NotNil(t, resp)
+				require.NotNil(t, resp.Data)
+
+				// Verify response structure
+				assert.Contains(t, resp.Data, "access_token")
+				assert.Contains(t, resp.Data, "issued_token_type")
+				assert.Contains(t, resp.Data, "token_type")
+				assert.Contains(t, resp.Data, "expires_in")
+				assert.Equal(t, "Bearer", resp.Data["token_type"])
+				assert.Equal(t, tokenTypeAccessToken, resp.Data["issued_token_type"])
+
+				// Parse and verify the access token
+				accessToken := resp.Data["access_token"].(string)
+				parsedToken, err := jwt.ParseSigned(accessToken)
+				require.NoError(t, err)
+
+				var claims map[string]interface{}
+				err = parsedToken.UnsafeClaimsWithoutVerification(&claims)
+				require.NoError(t, err)
+
+				// Verify that custom client_id is used instead of role name
+				assert.Equal(t, "custom-client-id", claims["client_id"], "client_id should be the custom value, not the role name")
+				assert.Equal(t, "test-audience", claims["aud"])
+				assert.Equal(t, "read:data", claims["scope"])
+				assert.Contains(t, claims, "act")
+
+				// Verify actor claim also has the custom client_id
+				actClaim := claims["act"].(map[string]interface{})
+				assert.Equal(t, "custom-client-id", actClaim["client_id"])
+			},
+		},
+		{
+			name:     "token exchange defaults to role name when client_id not provided",
+			roleName: "test-role",
+			entityID: "52b1da4c-0a60-f23a-3384-1d5837af487e",
+			setup: func(t *testing.T, b logical.Backend, storage logical.Storage) (string, string) {
+				// Create config
+				config := &oauthConfig{
+					ClientID:     "test-client",
+					ClientSecret: "test-secret",
+				}
+				entry, err := logical.StorageEntryJSON("config", config)
+				require.NoError(t, err)
+				err = storage.Put(context.Background(), entry)
+				require.NoError(t, err)
+
+				// Create a test key
+				privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+				require.NoError(t, err)
+
+				jwk := &jose.JSONWebKey{
+					Key:       privateKey,
+					KeyID:     "test-key-id",
+					Algorithm: string(jose.RS256),
+				}
+
+				key := &namedKey{
+					name:             "test-key",
+					Algorithm:        string(jose.RS256),
+					SigningKey:       jwk,
+					VerificationTTL:  24 * time.Hour,
+					AllowedClientIDs: []string{"*"},
+				}
+
+				keyEntry, err := logical.StorageEntryJSON(keyStoragePath+"test-key", key)
+				require.NoError(t, err)
+				err = storage.Put(context.Background(), keyEntry)
+				require.NoError(t, err)
+
+				// Create a test role
+				role := &roleEntry{
+					Key:    "test-key",
+					Issuer: "http://127.0.0.1:8200/v1/identity/oidc",
+					TTL:    1 * time.Hour,
+				}
+
+				roleEntry, err := logical.StorageEntryJSON(roleStoragePrefix+"test-role", role)
+				require.NoError(t, err)
+				err = storage.Put(context.Background(), roleEntry)
+				require.NoError(t, err)
+
+				// Create tokens - note client_id in may_act matches role name
+				subjectToken := createJWTWithClaims(map[string]interface{}{
+					"iss":       "http://localhost:8200/v1/identity/oidc/provider/test",
+					"sub":       "064a698a-4133-7443-b89d-aecd885aa3ee",
+					"aud":       "lF7iYit6FaxpfyOMICqJLzDrQsCYQYsZ",
+					"client_id": "lF7iYit6FaxpfyOMICqJLzDrQsCYQYsZ",
+					"exp":       time.Now().Add(1 * time.Hour).Unix(),
+					"may_act": []map[string]string{
+						{
+							"client_id": "test-role",
+							"sub":       "52b1da4c-0a60-f23a-3384-1d5837af487e",
+						},
+					},
+				})
+
+				actorToken := createJWTWithClaims(map[string]interface{}{
+					"iss":       "http://127.0.0.1:8200/v1/identity/oidc",
+					"sub":       "52b1da4c-0a60-f23a-3384-1d5837af487e",
+					"aud":       "test-audience",
+					"client_id": "test-client",
+					"exp":       time.Now().Add(1 * time.Hour).Unix(),
+					"scope":     "read:data",
+				})
+
+				return subjectToken, actorToken
+			},
+			data: map[string]interface{}{
+				"role":     "test-role",
+				"audience": "test-audience",
+				"scope":    "read:data",
+				// Note: client_id is NOT provided, should default to role name
+			},
+			wantErr: false,
+			check: func(t *testing.T, resp *logical.Response) {
+				require.NotNil(t, resp)
+				require.NotNil(t, resp.Data)
+
+				// Parse and verify the access token
+				accessToken := resp.Data["access_token"].(string)
+				parsedToken, err := jwt.ParseSigned(accessToken)
+				require.NoError(t, err)
+
+				var claims map[string]interface{}
+				err = parsedToken.UnsafeClaimsWithoutVerification(&claims)
+				require.NoError(t, err)
+
+				// Verify that client_id defaults to role name when not provided
+				assert.Equal(t, "test-role", claims["client_id"], "client_id should default to role name when not provided")
+
+				// Verify actor claim also has the role name as client_id
+				actClaim := claims["act"].(map[string]interface{})
+				assert.Equal(t, "test-role", actClaim["client_id"])
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			b, storage := getTestBackend(t)
+
+			// Setup test data
+			subjectToken, actorToken := tc.setup(t, b, storage)
+
+			// Build data map with tokens
+			data := tc.data
+			if data == nil {
+				data = make(map[string]interface{})
+			}
+
+			// Add tokens to data if they were created
+			if subjectToken != "" {
+				data["subject_token"] = subjectToken
+			}
+			if actorToken != "" {
+				data["actor_token"] = actorToken
+			}
+
+			// Use roleName from test case, default to "test-role" if not specified
+			roleName := tc.roleName
+			if roleName == "" {
+				roleName = "test-role"
+			}
+
+			// Make the request using ReadOperation (as changed in path_token.go)
+			resp, err := b.HandleRequest(context.Background(), &logical.Request{
+				Operation: logical.ReadOperation,
+				Path:      "token/" + roleName,
+				Data:      data,
+				Storage:   storage,
+				EntityID:  tc.entityID,
+			})
+
+			if tc.wantErr {
+				if err != nil {
+					assert.Contains(t, err.Error(), tc.errMsg)
+				} else {
+					require.NotNil(t, resp)
+					require.True(t, resp.IsError(), "expected error response")
+					if tc.errMsg != "" {
+						assert.Contains(t, resp.Error().Error(), tc.errMsg)
+					}
+				}
+			} else {
+				require.NoError(t, err)
+				require.NotNil(t, resp)
+				require.False(t, resp.IsError(), "unexpected error: %v", resp.Error())
+				if tc.check != nil {
+					tc.check(t, resp)
 				}
 			}
 		})
