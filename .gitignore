@@ -39,3 +39,5 @@ bin/
 pkg/
 
 vault/audit.log
+# Added by goreleaser init:
+dist/
