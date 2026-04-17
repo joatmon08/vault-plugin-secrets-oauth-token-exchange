@@ -22,9 +22,7 @@ vault secrets tune -audit-non-hmac-request-keys=scope -audit-non-hmac-request-ke
 vault write sts/config \
     client_id=$(cd bootstrap/terraform && terraform output -raw oidc_client_id) \
     client_secret=$(cd bootstrap/terraform && terraform output -raw oidc_client_secret) \
-    subject_token_jwks_uri=http://localhost:8200/v1/identity/oidc/provider/test/.well-known/keys \
-    vault_addr=$VAULT_ADDR \
-    vault_token=$VAULT_TOKEN
+    subject_token_jwks_uri=http://localhost:8200/v1/identity/oidc/provider/test/.well-known/keys
 
 vault write sts/key/test allowed_client_ids="*"
 

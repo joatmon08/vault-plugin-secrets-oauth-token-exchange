@@ -18,12 +18,13 @@ const (
 
 // roleEntry defines the data required for a Vault role to perform token exchange
 type roleEntry struct {
-	Name              string        `json:"name"`
-	Key               string        `json:"key"`
-	Issuer            string        `json:"issuer"`
-	TTL               time.Duration `json:"ttl"`
-	MaxTTL            time.Duration `json:"max_ttl"`
-	ActorTokenJWKSURI string        `json:"actor_token_jwks_uri"`
+	Name                     string        `json:"name"`
+	Key                      string        `json:"key"`
+	Issuer                   string        `json:"issuer"`
+	TTL                      time.Duration `json:"ttl"`
+	MaxTTL                   time.Duration `json:"max_ttl"`
+	ActorTokenJWKSURI        string        `json:"actor_token_jwks_uri"`
+	ActorTokenJWKSSkipVerify bool          `json:"actor_token_jwks_skip_verify"`
 }
 
 // toResponseData returns response data for a role
@@ -37,6 +38,7 @@ func (r *roleEntry) toResponseData() map[string]interface{} {
 	}
 	if r.ActorTokenJWKSURI != "" {
 		data["actor_token_jwks_uri"] = r.ActorTokenJWKSURI
+		data["actor_token_jwks_skip_verify"] = r.ActorTokenJWKSSkipVerify
 	}
 	return data
 }
@@ -74,6 +76,11 @@ func pathRole(b *oauthBackend) []*framework.Path {
 				"actor_token_jwks_uri": {
 					Type:        framework.TypeString,
 					Description: "JWKS URI for verifying actor tokens (e.g., https://vault-addr/v1/identity/oidc/.well-known/keys)",
+				},
+				"actor_token_jwks_skip_verify": {
+					Type:        framework.TypeBool,
+					Description: "Skip TLS certificate verification when fetching actor token JWKS (insecure, use only for testing)",
+					Default:     false,
 				},
 			},
 			Operations: map[logical.Operation]framework.OperationHandler{
@@ -191,6 +198,10 @@ func (b *oauthBackend) pathRoleWrite(ctx context.Context, req *logical.Request, 
 
 	if actorJWKSURI, ok := data.GetOk("actor_token_jwks_uri"); ok {
 		role.ActorTokenJWKSURI = actorJWKSURI.(string)
+	}
+
+	if actorSkipVerify, ok := data.GetOk("actor_token_jwks_skip_verify"); ok {
+		role.ActorTokenJWKSSkipVerify = actorSkipVerify.(bool)
 	}
 
 	// Validate TTL values

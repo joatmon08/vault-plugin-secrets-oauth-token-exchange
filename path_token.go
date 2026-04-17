@@ -5,6 +5,7 @@ package oauth
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -402,7 +403,7 @@ func (b *oauthBackend) decodeActorToken(token string) (*actorTokenClaims, error)
 }
 
 // verifyTokenWithJWKS fetches the JWKS from the given URI and verifies the token signature
-func verifyTokenWithJWKS(jwksURI string, token string) (map[string]interface{}, error) {
+func verifyTokenWithJWKS(jwksURI string, token string, skipVerify bool) (map[string]interface{}, error) {
 	// Parse the JWT
 	parsedToken, err := jwt.ParseSigned(token)
 	if err != nil {
@@ -419,7 +420,7 @@ func verifyTokenWithJWKS(jwksURI string, token string) (map[string]interface{}, 
 	}
 
 	// Fetch the JWKS from the URI
-	jwks, err := fetchJWKS(jwksURI)
+	jwks, err := fetchJWKS(jwksURI, skipVerify)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch JWKS: %w", err)
 	}
@@ -469,9 +470,19 @@ func verifyTokenWithJWKS(jwksURI string, token string) (map[string]interface{}, 
 }
 
 // fetchJWKS fetches a JWKS from the given URI
-func fetchJWKS(uri string) (*jose.JSONWebKeySet, error) {
-	// Use http.Get to fetch the JWKS
-	resp, err := http.Get(uri)
+func fetchJWKS(uri string, skipVerify bool) (*jose.JSONWebKeySet, error) {
+	// Create HTTP client with optional TLS skip verification
+	client := &http.Client{}
+	if skipVerify {
+		client.Transport = &http.Transport{
+			TLSClientConfig: &tls.Config{
+				InsecureSkipVerify: true,
+			},
+		}
+	}
+
+	// Fetch the JWKS
+	resp, err := client.Get(uri)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch JWKS from %s: %w", uri, err)
 	}
@@ -497,7 +508,7 @@ func (b *oauthBackend) verifySubjectToken(ctx context.Context, config *oauthConf
 
 	// If JWKS URI is configured, verify the signature and decode
 	if config.SubjectTokenJWKSURI != "" {
-		claims, err = verifyTokenWithJWKS(config.SubjectTokenJWKSURI, token)
+		claims, err = verifyTokenWithJWKS(config.SubjectTokenJWKSURI, token, config.SubjectTokenJWKSSkipVerify)
 		if err != nil {
 			return nil, fmt.Errorf("failed to verify subject token with JWKS: %w", err)
 		}
@@ -561,7 +572,7 @@ func (b *oauthBackend) verifyActorToken(ctx context.Context, req *logical.Reques
 	}
 
 	// Verify the token using JWKS
-	_, err := verifyTokenWithJWKS(role.ActorTokenJWKSURI, actorToken)
+	_, err := verifyTokenWithJWKS(role.ActorTokenJWKSURI, actorToken, role.ActorTokenJWKSSkipVerify)
 	if err != nil {
 		return fmt.Errorf("failed to verify actor token with JWKS: %w", err)
 	}

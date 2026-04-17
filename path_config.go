@@ -18,9 +18,10 @@ const (
 // oauthConfig includes the configuration required to instantiate
 // a new OAuth client for token exchange
 type oauthConfig struct {
-	ClientID            string `json:"client_id"`
-	ClientSecret        string `json:"client_secret"`
-	SubjectTokenJWKSURI string `json:"subject_token_jwks_uri"`
+	ClientID                 string `json:"client_id"`
+	ClientSecret             string `json:"client_secret"`
+	SubjectTokenJWKSURI      string `json:"subject_token_jwks_uri"`
+	SubjectTokenJWKSSkipVerify bool   `json:"subject_token_jwks_skip_verify"`
 }
 
 // pathConfig extends the Vault API with a `/config` endpoint for the backend
@@ -45,6 +46,11 @@ func pathConfig(b *oauthBackend) []*framework.Path {
 				"subject_token_jwks_uri": {
 					Type:        framework.TypeString,
 					Description: "JWKS URI for verifying subject tokens (e.g., https://issuer/.well-known/jwks.json)",
+				},
+				"subject_token_jwks_skip_verify": {
+					Type:        framework.TypeBool,
+					Description: "Skip TLS certificate verification when fetching subject token JWKS (insecure, use only for testing)",
+					Default:     false,
 				},
 			},
 			Operations: map[logical.Operation]framework.OperationHandler{
@@ -98,6 +104,7 @@ func (b *oauthBackend) pathConfigRead(ctx context.Context, req *logical.Request,
 
 	if config.SubjectTokenJWKSURI != "" {
 		respData["subject_token_jwks_uri"] = config.SubjectTokenJWKSURI
+		respData["subject_token_jwks_skip_verify"] = config.SubjectTokenJWKSSkipVerify
 	}
 
 	return &logical.Response{
@@ -125,6 +132,10 @@ func (b *oauthBackend) pathConfigWrite(ctx context.Context, req *logical.Request
 
 	if jwksURI, ok := data.GetOk("subject_token_jwks_uri"); ok {
 		config.SubjectTokenJWKSURI = jwksURI.(string)
+	}
+
+	if skipVerify, ok := data.GetOk("subject_token_jwks_skip_verify"); ok {
+		config.SubjectTokenJWKSSkipVerify = skipVerify.(bool)
 	}
 
 	entry, err := logical.StorageEntryJSON(configStoragePath, config)
@@ -186,6 +197,7 @@ You need to provide:
 
 Optional configuration for subject token verification:
 - subject_token_jwks_uri: JWKS URI for verifying subject token signatures
+- subject_token_jwks_skip_verify: Skip TLS certificate verification when fetching subject token JWKS (insecure, use only for testing)
 
 Subject tokens are verified by validating the JWT signature against the JWKS URI if provided,
 or by decoding and validating the JWT claims if no JWKS URI is configured.
