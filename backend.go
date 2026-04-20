@@ -45,6 +45,7 @@ func backend() *oauthBackend {
 			},
 			Unauthenticated: []string{
 				".well-known/keys",
+				".well-known/openid-configuration",
 			},
 		},
 		Paths: framework.PathAppend(
@@ -53,6 +54,7 @@ func backend() *oauthBackend {
 			pathKey(&b),
 			pathToken(&b),
 			pathJWKS(&b),
+			pathOIDCDiscovery(&b),
 		),
 		Secrets:     []*framework.Secret{},
 		BackendType: logical.TypeLogical,

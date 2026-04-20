@@ -223,9 +223,49 @@ vault read sts/token/second-client \
     scope="read"
 ```
 
+### OpenID Connect Discovery
+
+The plugin provides an OpenID Connect Discovery endpoint at `.well-known/openid-configuration` that returns metadata about the token exchange service. This endpoint is publicly accessible and follows the [OpenID Connect Discovery 1.0](https://openid.net/specs/openid-connect-discovery-1_0.html) specification.
+
+**Example:**
+```bash
+# Retrieve the discovery document
+curl http://localhost:8200/v1/sts/.well-known/openid-configuration
+```
+
+**Response:**
+```json
+{
+  "issuer": "http://localhost:8200/v1/identity/oidc/provider/default",
+  "jwks_uri": "http://localhost:8200/v1/sts/.well-known/keys",
+  "token_endpoint": "http://localhost:8200/v1/sts/token",
+  "response_types_supported": ["token"],
+  "subject_types_supported": ["public"],
+  "id_token_signing_alg_values_supported": [
+    "RS256", "RS384", "RS512",
+    "ES256", "ES384", "ES512",
+    "EdDSA"
+  ],
+  "grant_types_supported": [
+    "urn:ietf:params:oauth:grant-type:token-exchange"
+  ],
+  "token_endpoint_auth_methods_supported": [
+    "client_secret_basic",
+    "client_secret_post"
+  ]
+}
+```
+
+The discovery document allows OAuth clients and resource servers to automatically discover the configuration of the token exchange service, including the JWKS endpoint for retrieving public keys.
+
 ### JWKS Endpoints
 
-The plugin uses JWKS (JSON Web Key Set) endpoints to verify token signatures:
+The plugin provides and uses JWKS (JSON Web Key Set) endpoints:
+
+- **Public JWKS Endpoint**: Available at `.well-known/keys`
+  - Returns the public keys used to sign tokens issued by this plugin
+  - Publicly accessible for token verification by resource servers
+  - Example: `http://localhost:8200/v1/sts/.well-known/keys`
 
 - **Subject Token JWKS**: Configured in `sts/config` via `subject_token_jwks_uri`
   - Used to verify the signature of subject tokens
@@ -235,7 +275,7 @@ The plugin uses JWKS (JSON Web Key Set) endpoints to verify token signatures:
   - Used to verify the signature of actor tokens
   - Example: `http://localhost:8200/v1/identity/oidc/.well-known/keys`
 
-The plugin fetches the public keys from these endpoints and uses them to verify JWT signatures, ensuring tokens are authentic and haven't been tampered with.
+The plugin fetches public keys from the configured JWKS endpoints to verify JWT signatures, ensuring tokens are authentic and haven't been tampered with. Resource servers can use the plugin's public JWKS endpoint to verify tokens issued by this token exchange service.
 
 ## Architecture
 
