@@ -24,7 +24,8 @@ const (
 )
 
 type subjectTokenClaims struct {
-	MayAct []*mayActClaim `json:"may_act"`
+	MayAct []*mayActClaim         `json:"may_act"`
+	Actors    map[string]interface{} `json:"act"`
 	jwt.Claims
 }
 
@@ -34,10 +35,9 @@ type mayActClaim struct {
 }
 
 type actorTokenClaims struct {
-	ClientID string                 `json:"client_id"`
-	Subject  string                 `json:"sub"`
-	Actors   map[string]interface{} `json:"act"`
-	Scope    string                 `json:"scope"`
+	ClientID string `json:"client_id"`
+	Subject  string `json:"sub"`
+	Scope    string `json:"scope"`
 }
 
 // pathToken extends the Vault API with token exchange endpoints
@@ -237,7 +237,7 @@ func (b *oauthBackend) performTokenExchange(ctx context.Context, req *logical.Re
 		return nil, fmt.Errorf("subject token verification failed: %w", err)
 	}
 
-	// Decode actor token
+	// Decode actor token (only for validation and scope extraction)
 	actorTokenClaims, err := b.decodeActorToken(actorToken)
 	if err != nil {
 		return nil, fmt.Errorf("actor token decoding failed: %w", err)
@@ -288,8 +288,9 @@ func (b *oauthBackend) performTokenExchange(ctx context.Context, req *logical.Re
 		actors["scope"] = scope
 	}
 
-	if actorTokenClaims.Actors != nil {
-		actors["act"] = actorTokenClaims.Actors
+	// Get nested act claim from subject token, not actor token
+	if subjectTokenClaims.Actors != nil {
+		actors["act"] = subjectTokenClaims.Actors
 	}
 
 	// Generate the access token
@@ -393,10 +394,6 @@ func (b *oauthBackend) decodeActorToken(token string) (*actorTokenClaims, error)
 
 	if scope, ok := claims["scope"]; ok {
 		claim.Scope = scope.(string)
-	}
-
-	if actors, ok := claims["act"]; ok {
-		claim.Actors = actors.(map[string]interface{})
 	}
 
 	return claim, nil
@@ -555,8 +552,17 @@ func (b *oauthBackend) verifySubjectToken(ctx context.Context, config *oauthConf
 		})
 	}
 
+	// Extract act claim if present (for delegation chains)
+	var actClaim map[string]interface{}
+	if actRaw, ok := claims["act"]; ok {
+		if actMap, ok := actRaw.(map[string]interface{}); ok {
+			actClaim = actMap
+		}
+	}
+
 	subjectTokenClaims := &subjectTokenClaims{
 		MayAct: mayActClaims,
+		Actors: actClaim,
 		Claims: jwt.Claims{
 			Subject: claims["sub"].(string),
 		},

@@ -2,7 +2,6 @@
 # Copyright IBM Corp. 2026
 # SPDX-License-Identifier: MPL-2.0
 
-
 source secrets.env
 
 vault audit enable file file_path=vault/audit.log
@@ -31,9 +30,21 @@ vault write sts/role/test-client \
     issuer="http://localhost:8200/v1/identity/oidc/provider/test" \
     actor_token_jwks_uri=http://localhost:8200/v1/identity/oidc/.well-known/keys
 
-vault write sts/role/second-client \
+## STS Delegated endpoint
+
+vault secrets enable -path=sts-delegated vault-plugin-secrets-oauth-token-exchange
+
+vault write sts-delegated/config \
+    client_id=$(cd bootstrap/terraform && terraform output -raw oidc_client_id) \
+    client_secret=$(cd bootstrap/terraform && terraform output -raw oidc_client_secret) \
+    subject_token_jwks_uri=http://localhost:8200/v1/sts/.well-known/keys
+
+vault write sts-delegated/key/test allowed_client_ids="*"
+
+vault write sts-delegated/role/second-client \
     key="test" \
-    actor_token_jwks_uri=http://localhost:8200/v1/sts/.well-known/keys
+    issuer="http://localhost:8200/v1/sts-delegated" \
+    actor_token_jwks_uri=http://localhost:8200/v1/identity/oidc/.well-known/keys
 
 ACTOR_TOKEN=$(VAULT_TOKEN=$(cd bootstrap/terraform && terraform output -json client_agent_vault_tokens | jq -r '.["test-client"]') vault read -format=json identity/oidc/token/test-client | jq -r .data.token)
 
@@ -45,8 +56,10 @@ TEST_CLIENT_ACCESS_TOKEN=$(VAULT_TOKEN=$(cd bootstrap/terraform && terraform out
    audience="helloworld-server" \
    scope="helloworld:read" | jq -r .data.access_token)
 
-VAULT_TOKEN=$(cd bootstrap/terraform && terraform output -json client_agent_vault_tokens | jq -r '.["second-client"]') vault read sts/token/second-client \
-   subject_token="$SUBJECT_TOKEN" \
-   actor_token="$TEST_CLIENT_ACCESS_TOKEN" \
+SECOND_ACTOR_TOKEN=$(VAULT_TOKEN=$(cd bootstrap/terraform && terraform output -json client_agent_vault_tokens | jq -r '.["second-client"]') vault read -format=json identity/oidc/token/second-client | jq -r .data.token)
+
+VAULT_TOKEN=$(cd bootstrap/terraform && terraform output -json client_agent_vault_tokens | jq -r '.["second-client"]') vault read sts-delegated/token/second-client \
+   subject_token="$TEST_CLIENT_ACCESS_TOKEN" \
+   actor_token="$SECOND_ACTOR_TOKEN" \
    audience="helloworld-server" \
    scope="helloworld:write"

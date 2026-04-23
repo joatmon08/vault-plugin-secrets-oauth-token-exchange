@@ -841,7 +841,7 @@ func TestPerformTokenExchange(t *testing.T) {
 			name:     "successful token exchange with nested act claims",
 			entityID: "52b1da4c-0a60-f23a-3384-1d5837af487e",
 			setup: func(t *testing.T, b *oauthBackend, storage logical.Storage) (string, string) {
-				// Create subject token with may_act claim
+				// Create subject token with may_act claim and nested act claim
 				subjectToken := createJWTWithClaims(map[string]interface{}{
 					"iss":       "http://localhost:8200/v1/identity/oidc/provider/test",
 					"sub":       "064a698a-4133-7443-b89d-aecd885aa3ee",
@@ -859,9 +859,13 @@ func TestPerformTokenExchange(t *testing.T) {
 							"sub":       "a1b2c3d4-5678-90ab-cdef-1234567890ab",
 						},
 					},
+					"act": map[string]interface{}{
+						"sub":       "a1b2c3d4-5678-90ab-cdef-1234567890ab",
+						"client_id": "first-client",
+					},
 				})
 
-				// Create actor token with nested act claims
+				// Create actor token (without nested act claims)
 				actorToken := createJWTWithClaims(map[string]interface{}{
 					"iss":       "http://127.0.0.1:8200/v1/identity/oidc",
 					"sub":       "064a698a-4133-7443-b89d-aecd885aa3ee",
@@ -870,10 +874,6 @@ func TestPerformTokenExchange(t *testing.T) {
 					"exp":       time.Now().Add(1 * time.Hour).Unix(),
 					"namespace": "root",
 					"scope":     "helloworld:read",
-					"act": map[string]interface{}{
-						"sub":       "a1b2c3d4-5678-90ab-cdef-1234567890ab",
-						"client_id": "first-client",
-					},
 				})
 
 				return subjectToken, actorToken
@@ -935,6 +935,7 @@ func TestPerformTokenExchange(t *testing.T) {
 			name:     "successful token exchange with deeply nested act claims (3 levels)",
 			entityID: "52b1da4c-0a60-f23a-3384-1d5837af487e",
 			setup: func(t *testing.T, b *oauthBackend, storage logical.Storage) (string, string) {
+				// Create subject token with 3 levels of nested act claims
 				subjectToken := createJWTWithClaims(map[string]interface{}{
 					"iss":       "http://localhost:8200/v1/identity/oidc/provider/test",
 					"sub":       "064a698a-4133-7443-b89d-aecd885aa3ee",
@@ -948,16 +949,6 @@ func TestPerformTokenExchange(t *testing.T) {
 							"sub":       "52b1da4c-0a60-f23a-3384-1d5837af487e",
 						},
 					},
-				})
-
-				// Create actor token with 3 levels of nested act claims
-				actorToken := createJWTWithClaims(map[string]interface{}{
-					"iss":       "http://127.0.0.1:8200/v1/identity/oidc",
-					"sub":       "064a698a-4133-7443-b89d-aecd885aa3ee",
-					"aud":       "test-client",
-					"client_id": "test-client",
-					"exp":       time.Now().Add(1 * time.Hour).Unix(),
-					"namespace": "root",
 					"act": map[string]interface{}{
 						"sub":       "a1b2c3d4-5678-90ab-cdef-1234567890ab",
 						"client_id": "service-client-1",
@@ -970,6 +961,16 @@ func TestPerformTokenExchange(t *testing.T) {
 							},
 						},
 					},
+				})
+
+				// Create actor token
+				actorToken := createJWTWithClaims(map[string]interface{}{
+					"iss":       "http://127.0.0.1:8200/v1/identity/oidc",
+					"sub":       "064a698a-4133-7443-b89d-aecd885aa3ee",
+					"aud":       "test-client",
+					"client_id": "test-client",
+					"exp":       time.Now().Add(1 * time.Hour).Unix(),
+					"namespace": "root",
 				})
 
 				return subjectToken, actorToken

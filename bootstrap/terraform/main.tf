@@ -45,6 +45,10 @@ path "identity/oidc/token/${each.key}" {
 path "sts/token/${each.key}" {
   capabilities = ["read"]
 }
+
+path "sts-delegated/token/${each.key}" {
+  capabilities = ["read"]
+}
 EOT
 }
 
