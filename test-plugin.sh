@@ -72,7 +72,7 @@ TEST_CLIENT_ACCESS_TOKEN=$(VAULT_TOKEN=$(cd bootstrap/terraform && terraform out
    subject_token="$SUBJECT_TOKEN" \
    actor_token="$ACTOR_TOKEN" \
    audience="helloworld-server" \
-   scope="may-act" | jq -r .data.access_token)
+   scope="may-act helloworld:read" | jq -r .data.access_token)
 
 SECOND_ACTOR_TOKEN=$(VAULT_TOKEN=$(cd bootstrap/terraform && terraform output -json client_agent_vault_tokens | jq -r '.["second-client"]') vault read -format=json identity/oidc/token/second-client | jq -r .data.token)
 

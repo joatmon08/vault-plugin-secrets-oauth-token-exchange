@@ -73,7 +73,7 @@ vault secrets tune -audit-non-hmac-request-keys=scope \
 
 ## Configuration
 
-The secrets engine requires configuration in three steps: config, keys, and roles.
+The secrets engine requires configuration in four steps: config, keys, roles, and optionally scopes.
 
 ### Step 1: Configure the Secrets Engine
 
@@ -122,6 +122,23 @@ vault write sts/role/test-client \
 - `ttl` (optional): Default TTL for tokens issued by this role (default: 3600 seconds)
 - `max_ttl` (optional): Maximum TTL for tokens issued by this role (default: 86400 seconds)
 - `actor_token_jwks_uri` (optional): JWKS URI for verifying actor token signatures
+- `scopes_supported` (optional): Comma-separated list of scope names that this role supports
+
+### Step 4: Create Scopes (Optional)
+
+Scopes allow you to add custom claims to issued tokens based on entity and group metadata using templates:
+
+```bash
+vault write sts/scope/custom-claims \
+    template='{"department": {{identity.entity.metadata.department}}, "roles": {{identity.entity.metadata.roles}}}' \
+    description="Custom claims for department and roles"
+```
+
+**Parameters:**
+- `template` (required): Template string using identity templating language. Must produce valid JSON and cannot use reserved claim names (iss, sub, aud, exp, iat, client_id, act)
+- `description` (optional): Description of the scope
+
+The template can access entity and group metadata to populate custom claims in the issued tokens. Templates can be provided as JSON strings or base64-encoded.
 
 ## Usage
 
@@ -205,7 +222,7 @@ The `access_token` is a signed JWT containing:
 
 ### Multi-Level Delegation
 
-The plugin supports multi-level delegation chains. When an access token is used as an actor token in a subsequent exchange, the `act` claim is nested to represent the delegation chain:
+The plugin supports multi-level delegation chains. When a subject token already contains an `act` claim (representing a previous delegation), that nested delegation chain is preserved in the newly issued access token:
 
 ```bash
 # First exchange: subject + actor1 → token1
@@ -215,13 +232,16 @@ vault read sts/token/test-client \
     audience="service-a" \
     scope="write"
 
-# Second exchange: subject + token1 → token2 (nested delegation)
+# Second exchange: subject_with_act + actor2 → token2 (nested delegation)
+# The subject token here already contains an 'act' claim from a previous exchange
 vault read sts/token/second-client \
-    subject_token="$SUBJECT_TOKEN" \
-    actor_token="$ACCESS_TOKEN_FOR_ACTOR_TOKEN_1" \
+    subject_token="$SUBJECT_TOKEN_WITH_ACT" \
+    actor_token="$ACTOR_TOKEN_2" \
     audience="service-b" \
     scope="read"
 ```
+
+**Important**: The nested `act` claim in the issued token comes from the **subject token**, not the actor token. If the subject token contains an `act` claim, it will be nested within the new actor claim in the issued token, creating a delegation chain.
 
 ### OpenID Connect Discovery
 
@@ -363,6 +383,20 @@ vault write sts/role/my-app \
     actor_token_jwks_uri="http://localhost:8200/v1/identity/oidc/.well-known/keys" \
     ttl=3600 \
     max_ttl=86400
+
+# (Optional) Create a scope for custom claims
+vault write sts/scope/user-metadata \
+    template='{"department": {{identity.entity.metadata.department}}}' \
+    description="Include user department in tokens"
+
+# Update role to support the scope
+vault write sts/role/my-app \
+    key="production" \
+    issuer="http://localhost:8200/v1/identity/oidc/provider/default" \
+    actor_token_jwks_uri="http://localhost:8200/v1/identity/oidc/.well-known/keys" \
+    scopes_supported="user-metadata" \
+    ttl=3600 \
+    max_ttl=86400
 ```
 
 ### 2. Obtain Tokens
@@ -384,7 +418,7 @@ vault read sts/token/my-app \
     subject_token="$SUBJECT_TOKEN" \
     actor_token="$ACTOR_TOKEN" \
     audience="my-api-server" \
-    scope="read:data write:data"
+    scope="user-metadata"
 ```
 
 ### 4. Response
