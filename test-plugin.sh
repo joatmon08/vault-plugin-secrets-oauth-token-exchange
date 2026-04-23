@@ -2,6 +2,10 @@
 # Copyright IBM Corp. 2026
 # SPDX-License-Identifier: MPL-2.0
 
+vault operator init -key-shares=1 -key-threshold=1 -format=json > secrets/vault-init.json
+
+vault operator unseal
+
 source secrets.env
 
 vault audit enable file file_path=vault/audit.log
@@ -25,10 +29,23 @@ vault write sts/config \
 
 vault write sts/key/test allowed_client_ids="*"
 
+vault write sts/scope/may-act \
+    template='{
+  "may_act": [{
+    "client_id": "test-client",
+    "sub": "5257a4df-31a0-8304-987f-8d921a4956a7"
+  },{
+    "client_id": "second-client",
+    "sub": "f2b02b0a-b632-6b0a-d1ce-d1c47c652042"
+  }]
+}' \
+    description="May act claim for delegated access"
+
 vault write sts/role/test-client \
     key="test" \
     issuer="http://localhost:8200/v1/identity/oidc/provider/test" \
-    actor_token_jwks_uri=http://localhost:8200/v1/identity/oidc/.well-known/keys
+    actor_token_jwks_uri=http://localhost:8200/v1/identity/oidc/.well-known/keys \
+    scopes_supported=may-act
 
 ## STS Delegated endpoint
 
@@ -44,7 +61,8 @@ vault write sts-delegated/key/test allowed_client_ids="*"
 vault write sts-delegated/role/second-client \
     key="test" \
     issuer="http://localhost:8200/v1/sts-delegated" \
-    actor_token_jwks_uri=http://localhost:8200/v1/identity/oidc/.well-known/keys
+    actor_token_jwks_uri=http://localhost:8200/v1/identity/oidc/.well-known/keys \
+    scopes_supported=may-act
 
 ACTOR_TOKEN=$(VAULT_TOKEN=$(cd bootstrap/terraform && terraform output -json client_agent_vault_tokens | jq -r '.["test-client"]') vault read -format=json identity/oidc/token/test-client | jq -r .data.token)
 
@@ -54,7 +72,7 @@ TEST_CLIENT_ACCESS_TOKEN=$(VAULT_TOKEN=$(cd bootstrap/terraform && terraform out
    subject_token="$SUBJECT_TOKEN" \
    actor_token="$ACTOR_TOKEN" \
    audience="helloworld-server" \
-   scope="helloworld:read" | jq -r .data.access_token)
+   scope="may-act" | jq -r .data.access_token)
 
 SECOND_ACTOR_TOKEN=$(VAULT_TOKEN=$(cd bootstrap/terraform && terraform output -json client_agent_vault_tokens | jq -r '.["second-client"]') vault read -format=json identity/oidc/token/second-client | jq -r .data.token)
 

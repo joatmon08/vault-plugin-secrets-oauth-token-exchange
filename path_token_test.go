@@ -307,6 +307,259 @@ func TestVerifyActorToken(t *testing.T) {
 		})
 	}
 }
+
+func TestTokenExchangeWithScopes(t *testing.T) {
+	b, storage := getTestBackend(t)
+
+	// Create config
+	configReq := &logical.Request{
+		Operation: logical.CreateOperation,
+		Path:      "config",
+		Storage:   storage,
+		Data: map[string]interface{}{
+			"client_id":     "test-client",
+			"client_secret": "test-secret",
+		},
+	}
+	_, err := b.HandleRequest(context.Background(), configReq)
+	require.NoError(t, err)
+
+	// Create a key
+	keyReq := &logical.Request{
+		Operation: logical.CreateOperation,
+		Path:      "key/test-key",
+		Storage:   storage,
+		Data: map[string]interface{}{
+			"rotation_period":    "24h",
+			"verification_ttl":   "1h",
+			"allowed_client_ids": []string{"*"},
+		},
+	}
+	_, err = b.HandleRequest(context.Background(), keyReq)
+	require.NoError(t, err)
+
+	// Create scopes
+	profileScopeReq := &logical.Request{
+		Operation: logical.CreateOperation,
+		Path:      "scope/profile",
+		Storage:   storage,
+		Data: map[string]interface{}{
+			"template":    `{"email": "test@example.com", "name": "Test User"}`,
+			"description": "Profile scope",
+		},
+	}
+	_, err = b.HandleRequest(context.Background(), profileScopeReq)
+	require.NoError(t, err)
+
+	groupsScopeReq := &logical.Request{
+		Operation: logical.CreateOperation,
+		Path:      "scope/groups",
+		Storage:   storage,
+		Data: map[string]interface{}{
+			"template":    `{"groups": ["admin", "users"]}`,
+			"description": "Groups scope",
+		},
+	}
+	_, err = b.HandleRequest(context.Background(), groupsScopeReq)
+	require.NoError(t, err)
+
+	// Create a role with scopes
+	roleReq := &logical.Request{
+		Operation: logical.CreateOperation,
+		Path:      "role/test-role",
+		Storage:   storage,
+		Data: map[string]interface{}{
+			"key":               "test-key",
+			"issuer":            "https://example.com",
+			"scopes_supported":  []string{"profile", "groups"},
+		},
+	}
+	_, err = b.HandleRequest(context.Background(), roleReq)
+	require.NoError(t, err)
+
+	// Create subject and actor tokens
+	subjectToken := createJWTWithClaims(map[string]interface{}{
+		"iss":       "test-issuer",
+		"sub":       "user123",
+		"aud":       "test",
+		"client_id": "test-client",
+		"may_act":   []map[string]string{{"client_id": "test-role", "sub": "test-entity"}},
+	})
+
+	actorToken := createJWTWithClaims(map[string]interface{}{
+		"iss":       "test-issuer",
+		"sub":       "test-entity",
+		"aud":       "test",
+		"client_id": "test-role",
+	})
+
+	// Perform token exchange with scopes
+	tokenReq := &logical.Request{
+		Operation: logical.ReadOperation,
+		Path:      "token/test-role",
+		Storage:   storage,
+		EntityID:  "test-entity",
+		Data: map[string]interface{}{
+			"subject_token": subjectToken,
+			"actor_token":   actorToken,
+			"audience":      "test-audience",
+			"scope":         "profile groups",
+		},
+	}
+
+	resp, err := b.HandleRequest(context.Background(), tokenReq)
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	require.False(t, resp.IsError(), "expected no error, got: %v", resp.Error())
+
+	// Verify the access token contains scope template claims
+	accessToken, ok := resp.Data["access_token"].(string)
+	require.True(t, ok, "expected access_token to be a string")
+	require.NotEmpty(t, accessToken)
+
+	// Parse the access token to verify claims
+	parsedToken, err := jwt.ParseSigned(accessToken)
+	require.NoError(t, err)
+
+	var claims map[string]interface{}
+	err = parsedToken.UnsafeClaimsWithoutVerification(&claims)
+	require.NoError(t, err)
+
+	// Verify standard claims
+	assert.Equal(t, "https://example.com", claims["iss"])
+	assert.Equal(t, "user123", claims["sub"])
+	assert.Equal(t, "test-audience", claims["aud"])
+	assert.Equal(t, "profile groups", claims["scope"])
+
+	// Verify scope template claims were added
+	assert.Equal(t, "test@example.com", claims["email"], "expected email from profile scope template")
+	assert.Equal(t, "Test User", claims["name"], "expected name from profile scope template")
+	
+	groups, ok := claims["groups"].([]interface{})
+	require.True(t, ok, "expected groups to be an array")
+	assert.Len(t, groups, 2)
+	assert.Contains(t, groups, "admin")
+	assert.Contains(t, groups, "users")
+}
+
+func TestTokenExchangeWithMixedScopes(t *testing.T) {
+	b, storage := getTestBackend(t)
+
+	// Create config
+	configReq := &logical.Request{
+		Operation: logical.CreateOperation,
+		Path:      "config",
+		Storage:   storage,
+		Data: map[string]interface{}{
+			"client_id":     "test-client",
+			"client_secret": "test-secret",
+		},
+	}
+	_, err := b.HandleRequest(context.Background(), configReq)
+	require.NoError(t, err)
+
+	// Create a key
+	keyReq := &logical.Request{
+		Operation: logical.CreateOperation,
+		Path:      "key/test-key",
+		Storage:   storage,
+		Data: map[string]interface{}{
+			"rotation_period":    "24h",
+			"verification_ttl":   "1h",
+			"allowed_client_ids": []string{"*"},
+		},
+	}
+	_, err = b.HandleRequest(context.Background(), keyReq)
+	require.NoError(t, err)
+
+	// Create only one scope with a template
+	profileScopeReq := &logical.Request{
+		Operation: logical.CreateOperation,
+		Path:      "scope/profile",
+		Storage:   storage,
+		Data: map[string]interface{}{
+			"template":    `{"email": "test@example.com"}`,
+			"description": "Profile scope",
+		},
+	}
+	_, err = b.HandleRequest(context.Background(), profileScopeReq)
+	require.NoError(t, err)
+
+	// Create a role with only profile scope supported
+	roleReq := &logical.Request{
+		Operation: logical.CreateOperation,
+		Path:      "role/test-role",
+		Storage:   storage,
+		Data: map[string]interface{}{
+			"key":               "test-key",
+			"issuer":            "https://example.com",
+			"scopes_supported":  []string{"profile"},
+		},
+	}
+	_, err = b.HandleRequest(context.Background(), roleReq)
+	require.NoError(t, err)
+
+	// Create subject and actor tokens
+	subjectToken := createJWTWithClaims(map[string]interface{}{
+		"iss":       "test-issuer",
+		"sub":       "user123",
+		"aud":       "test",
+		"client_id": "test-client",
+		"may_act":   []map[string]string{{"client_id": "test-role", "sub": "test-entity"}},
+	})
+
+	actorToken := createJWTWithClaims(map[string]interface{}{
+		"iss":       "test-issuer",
+		"sub":       "test-entity",
+		"aud":       "test",
+		"client_id": "test-role",
+	})
+
+	// Perform token exchange with mixed scopes (profile has template, read/write don't)
+	tokenReq := &logical.Request{
+		Operation: logical.ReadOperation,
+		Path:      "token/test-role",
+		Storage:   storage,
+		EntityID:  "test-entity",
+		Data: map[string]interface{}{
+			"subject_token": subjectToken,
+			"actor_token":   actorToken,
+			"audience":      "test-audience",
+			"scope":         "profile read write",
+		},
+	}
+
+	resp, err := b.HandleRequest(context.Background(), tokenReq)
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	require.False(t, resp.IsError(), "expected no error, got: %v", resp.Error())
+
+	// Verify the access token
+	accessToken, ok := resp.Data["access_token"].(string)
+	require.True(t, ok, "expected access_token to be a string")
+	require.NotEmpty(t, accessToken)
+
+	// Parse the access token to verify claims
+	parsedToken, err := jwt.ParseSigned(accessToken)
+	require.NoError(t, err)
+
+	var claims map[string]interface{}
+	err = parsedToken.UnsafeClaimsWithoutVerification(&claims)
+	require.NoError(t, err)
+
+	// Verify the scope claim includes ALL requested scopes (templated and non-templated)
+	assert.Equal(t, "profile read write", claims["scope"], "all requested scopes should be in scope claim")
+
+	// Verify only the profile scope template was populated
+	assert.Equal(t, "test@example.com", claims["email"], "expected email from profile scope template")
+
+	// Verify read and write scopes didn't add any claims (they're just in the scope string)
+	_, hasRead := claims["read"]
+	_, hasWrite := claims["write"]
+	assert.False(t, hasRead, "read scope should not add claims")
+	assert.False(t, hasWrite, "write scope should not add claims")
+}
+	
 func TestDecodeToken(t *testing.T) {
 	futureTime := time.Now().Add(24 * time.Hour).Unix()
 	pastTime := time.Now().Add(-24 * time.Hour).Unix()

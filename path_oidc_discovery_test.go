@@ -171,6 +171,86 @@ func TestPathOIDCDiscovery(t *testing.T) {
 			t.Errorf("expected token_endpoint %q, got %q", expectedTokenEndpoint, discovery.TokenEndpoint)
 		}
 	})
+
+	t.Run("Discovery with scopes", func(t *testing.T) {
+		// Create scopes
+		scope1Req := &logical.Request{
+			Operation: logical.CreateOperation,
+			Path:      "scope/profile",
+			Storage:   storage,
+			Data: map[string]interface{}{
+				"template":    `{"email": "user@example.com"}`,
+				"description": "Profile scope",
+			},
+		}
+		_, err := b.HandleRequest(context.Background(), scope1Req)
+		if err != nil {
+			t.Fatalf("failed to create scope: %v", err)
+		}
+
+		scope2Req := &logical.Request{
+			Operation: logical.CreateOperation,
+			Path:      "scope/groups",
+			Storage:   storage,
+			Data: map[string]interface{}{
+				"template":    `{"groups": ["admin"]}`,
+				"description": "Groups scope",
+			},
+		}
+		_, err = b.HandleRequest(context.Background(), scope2Req)
+		if err != nil {
+			t.Fatalf("failed to create scope: %v", err)
+		}
+
+		// Test discovery endpoint
+		req := &logical.Request{
+			Operation: logical.ReadOperation,
+			Path:      ".well-known/openid-configuration",
+			Storage:   storage,
+			Connection: &logical.Connection{
+				RemoteAddr: "https://vault.example.com",
+			},
+			MountPoint: "oauth-token-exchange/",
+		}
+
+		resp, err := b.HandleRequest(context.Background(), req)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		rawBody, ok := resp.Data[logical.HTTPRawBody].([]byte)
+		if !ok {
+			t.Fatal("expected raw body to be []byte")
+		}
+
+		var discovery oidcDiscoveryResponse
+		if err := json.Unmarshal(rawBody, &discovery); err != nil {
+			t.Fatalf("failed to unmarshal discovery document: %v", err)
+		}
+
+		// Verify scopes_supported includes our scopes
+		if len(discovery.ScopesSupported) != 2 {
+			t.Errorf("expected 2 scopes, got %d", len(discovery.ScopesSupported))
+		}
+
+		foundProfile := false
+		foundGroups := false
+		for _, scope := range discovery.ScopesSupported {
+			if scope == "profile" {
+				foundProfile = true
+			}
+			if scope == "groups" {
+				foundGroups = true
+			}
+		}
+
+		if !foundProfile {
+			t.Error("expected scopes_supported to include 'profile'")
+		}
+		if !foundGroups {
+			t.Error("expected scopes_supported to include 'groups'")
+		}
+	})
 }
 
 func TestPathOIDCDiscoveryUnauthenticated(t *testing.T) {

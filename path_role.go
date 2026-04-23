@@ -25,16 +25,18 @@ type roleEntry struct {
 	MaxTTL                   time.Duration `json:"max_ttl"`
 	ActorTokenJWKSURI        string        `json:"actor_token_jwks_uri"`
 	ActorTokenJWKSSkipVerify bool          `json:"actor_token_jwks_skip_verify"`
+	ScopesSupported          []string      `json:"scopes_supported"`
 }
 
 // toResponseData returns response data for a role
 func (r *roleEntry) toResponseData() map[string]interface{} {
 	data := map[string]interface{}{
-		"name":    r.Name,
-		"key":     r.Key,
-		"issuer":  r.Issuer,
-		"ttl":     int64(r.TTL.Seconds()),
-		"max_ttl": int64(r.MaxTTL.Seconds()),
+		"name":              r.Name,
+		"key":               r.Key,
+		"issuer":            r.Issuer,
+		"ttl":               int64(r.TTL.Seconds()),
+		"max_ttl":           int64(r.MaxTTL.Seconds()),
+		"scopes_supported":  r.ScopesSupported,
 	}
 	if r.ActorTokenJWKSURI != "" {
 		data["actor_token_jwks_uri"] = r.ActorTokenJWKSURI
@@ -81,6 +83,10 @@ func pathRole(b *oauthBackend) []*framework.Path {
 					Type:        framework.TypeBool,
 					Description: "Skip TLS certificate verification when fetching actor token JWKS (insecure, use only for testing)",
 					Default:     false,
+				},
+				"scopes_supported": {
+					Type:        framework.TypeCommaStringSlice,
+					Description: "Comma-separated list of scope names that this role supports. These scopes must be created via the scope/ endpoint.",
 				},
 			},
 			Operations: map[logical.Operation]framework.OperationHandler{
@@ -202,6 +208,21 @@ func (b *oauthBackend) pathRoleWrite(ctx context.Context, req *logical.Request, 
 
 	if actorSkipVerify, ok := data.GetOk("actor_token_jwks_skip_verify"); ok {
 		role.ActorTokenJWKSSkipVerify = actorSkipVerify.(bool)
+	}
+
+	if scopesSupported, ok := data.GetOk("scopes_supported"); ok {
+		role.ScopesSupported = scopesSupported.([]string)
+		
+		// Validate that all referenced scopes exist
+		for _, scopeName := range role.ScopesSupported {
+			scopeEntry, err := req.Storage.Get(ctx, scopeStoragePrefix+scopeName)
+			if err != nil {
+				return nil, err
+			}
+			if scopeEntry == nil {
+				return logical.ErrorResponse("scope %q does not exist", scopeName), nil
+			}
+		}
 	}
 
 	// Validate TTL values

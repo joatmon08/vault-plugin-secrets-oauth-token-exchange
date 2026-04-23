@@ -9,11 +9,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/go-jose/go-jose/v3"
 	"github.com/go-jose/go-jose/v3/jwt"
 	"github.com/hashicorp/vault/sdk/framework"
+	"github.com/hashicorp/vault/sdk/helper/identitytpl"
 	"github.com/hashicorp/vault/sdk/logical"
 )
 
@@ -25,7 +27,7 @@ const (
 
 type subjectTokenClaims struct {
 	MayAct []*mayActClaim         `json:"may_act"`
-	Actors    map[string]interface{} `json:"act"`
+	Actors map[string]interface{} `json:"act"`
 	jwt.Claims
 }
 
@@ -161,14 +163,15 @@ func (b *oauthBackend) pathTokenExchange(ctx context.Context, req *logical.Reque
 
 // accessToken represents the claims for an RFC 8693 access token
 type accessToken struct {
-	Issuer   string                 `json:"iss"`
-	Subject  string                 `json:"sub"`
-	Audience string                 `json:"aud"`
-	Expiry   int64                  `json:"exp"`
-	IssuedAt int64                  `json:"iat"`
-	ClientID string                 `json:"client_id"`
-	Actors   map[string]interface{} `json:"act"`
-	Scope    string                 `json:"scope"`
+	Issuer         string                 `json:"iss"`
+	Subject        string                 `json:"sub"`
+	Audience       string                 `json:"aud"`
+	Expiry         int64                  `json:"exp"`
+	IssuedAt       int64                  `json:"iat"`
+	ClientID       string                 `json:"client_id"`
+	Actors         map[string]interface{} `json:"act"`
+	Scope          string                 `json:"scope"`
+	TemplateClaims map[string]interface{} `json:"-"` // Additional claims from scope templates
 }
 
 // generatePayload creates the JWT payload from the access token claims
@@ -182,6 +185,11 @@ func (t *accessToken) generatePayload() ([]byte, error) {
 		"client_id": t.ClientID,
 		"act":       t.Actors,
 		"scope":     t.Scope,
+	}
+
+	// Merge in template claims from scopes
+	for k, v := range t.TemplateClaims {
+		output[k] = v
 	}
 
 	return json.Marshal(output)
@@ -293,17 +301,48 @@ func (b *oauthBackend) performTokenExchange(ctx context.Context, req *logical.Re
 		actors["act"] = subjectTokenClaims.Actors
 	}
 
+	// Populate scope templates if scopes are requested and supported by the role
+	var templateClaims map[string]interface{}
+	if scope != "" && len(role.ScopesSupported) > 0 {
+		b.Logger().Debug("populating scope templates", "requested_scopes", scope, "role_scopes_supported", role.ScopesSupported)
+		
+		// Get entity information for template population
+		entity, err := b.getEntityFromRequest(ctx, req)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get entity information: %w", err)
+		}
+
+		// Get groups for the entity
+		groups, err := b.getGroupsForEntity(ctx, req, entity)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get groups for entity: %w", err)
+		}
+
+		// Populate scope templates
+		var conflict bool
+		templateClaims, conflict, err = b.populateScopeTemplates(ctx, req.Storage, entity, groups, scope, role.ScopesSupported)
+		if err != nil {
+			if conflict {
+				return nil, fmt.Errorf("scope template conflict: %w", err)
+			}
+			return nil, fmt.Errorf("failed to populate scope templates: %w", err)
+		}
+		
+		b.Logger().Debug("scope templates populated", "template_claims", templateClaims, "num_claims", len(templateClaims))
+	}
+
 	// Generate the access token
 	now := time.Now()
 	token := &accessToken{
-		Issuer:   role.Issuer,
-		Subject:  subjectTokenClaims.Subject,
-		Audience: audience,
-		Expiry:   now.Add(expiry).Unix(),
-		IssuedAt: now.Unix(),
-		ClientID: clientID,
-		Actors:   actors,
-		Scope:    scope,
+		Issuer:         role.Issuer,
+		Subject:        subjectTokenClaims.Subject,
+		Audience:       audience,
+		Expiry:         now.Add(expiry).Unix(),
+		IssuedAt:       now.Unix(),
+		ClientID:       clientID,
+		Actors:         actors,
+		Scope:          scope,
+		TemplateClaims: templateClaims,
 	}
 
 	// Generate and sign the payload
@@ -626,5 +665,121 @@ The subject token is verified by decoding and validating the JWT before performi
 the token exchange. The endpoint returns an exchanged access token that can be used
 with the target resource.
 `
+
+// populateScopeTemplates populates the templates for each of the requested scopes
+// Returns a map of populated claims and a bool to indicate if a conflict occurred
+// Note: All requested scopes are passed through to the scope claim, but only scopes
+// with templates defined in the role's scopes_supported list will have their templates populated
+func (b *oauthBackend) populateScopeTemplates(ctx context.Context, s logical.Storage, entity *logical.Entity, groups []*logical.Group, requestedScopes string, roleScopesSupported []string) (map[string]interface{}, bool, error) {
+	if requestedScopes == "" {
+		return make(map[string]interface{}), false, nil
+	}
+
+	// Parse requested scopes (space-delimited per OAuth 2.0 spec)
+	scopeNames := strings.Split(requestedScopes, " ")
+
+	// Gather the templates for scopes that are both:
+	// 1. Requested by the client
+	// 2. Supported by the role (have templates defined)
+	templates := make(map[string]string)
+	for _, scopeName := range scopeNames {
+		// Only process scopes that are supported by the role
+		if !strListContains(roleScopesSupported, scopeName) {
+			continue
+		}
+
+		scope, err := getScope(ctx, s, scopeName)
+		if err != nil {
+			return nil, false, err
+		}
+		if scope == nil {
+			// Scope is in role's scopes_supported but not defined - skip template population
+			continue
+		}
+		templates[scopeName] = scope.Template
+	}
+
+	claimsToScopes := make(map[string]string)
+	allClaims := make(map[string]interface{})
+
+	for scopeName, template := range templates {
+		if template == "" {
+			b.Logger().Debug("skipping scope with empty template", "scope", scopeName)
+			continue
+		}
+
+		b.Logger().Debug("populating scope template", "scope", scopeName, "template", template)
+
+		// Populate the template with entity and group information
+		_, populatedTemplate, err := identitytpl.PopulateString(identitytpl.PopulateStringInput{
+			Mode:   identitytpl.JSONTemplating,
+			String: template,
+			Entity: entity,
+			Groups: groups,
+		})
+		if err != nil {
+			b.Logger().Warn("error populating scope template", "scope", scopeName,
+				"template", template, "error", err)
+			continue
+		}
+
+		b.Logger().Debug("template populated", "scope", scopeName, "populated_template", populatedTemplate)
+
+		if populatedTemplate != "" {
+			claimsMap := make(map[string]interface{})
+			if err := json.Unmarshal([]byte(populatedTemplate), &claimsMap); err != nil {
+				b.Logger().Warn("error parsing scope template JSON", "scope", scopeName,
+					"template", template, "populated", populatedTemplate, "error", err)
+				continue
+			}
+
+			b.Logger().Debug("claims parsed from template", "scope", scopeName, "claims", claimsMap)
+
+			// Check top-level claim keys for conflicts with other scopes
+			for claimKey, claimValue := range claimsMap {
+				if conflictScope, ok := claimsToScopes[claimKey]; ok {
+					return nil, true, fmt.Errorf("found scopes with conflicting top-level claim: claim %q in scopes %q, %q",
+						claimKey, scopeName, conflictScope)
+				}
+				claimsToScopes[claimKey] = scopeName
+				allClaims[claimKey] = claimValue
+			}
+		}
+	}
+
+	return allClaims, false, nil
+}
+
+// getEntityFromRequest retrieves entity information from the request
+func (b *oauthBackend) getEntityFromRequest(ctx context.Context, req *logical.Request) (*logical.Entity, error) {
+	if req.EntityID == "" {
+		return nil, fmt.Errorf("no entity associated with the request")
+	}
+
+	// Create entity structure with available information from the request
+	// In a plugin context, we have limited access to full entity details
+	entity := &logical.Entity{
+		ID:       req.EntityID,
+		Name:     req.EntityID, // Use ID as name if name not available
+		Metadata: make(map[string]string),
+		Aliases:  make([]*logical.Alias, 0),
+	}
+
+	b.Logger().Debug("created entity for template population", "entity_id", entity.ID, "entity_name", entity.Name)
+
+	return entity, nil
+}
+
+// getGroupsForEntity retrieves group information for an entity
+func (b *oauthBackend) getGroupsForEntity(ctx context.Context, req *logical.Request, entity *logical.Entity) ([]*logical.Group, error) {
+	// In a plugin context, we have limited access to group information
+	// Return an empty slice - templates can still use entity.id
+	// For full group support, this would need to query Vault's identity store
+	groups := make([]*logical.Group, 0)
+
+	b.Logger().Debug("retrieved groups for entity", "entity_id", entity.ID, "num_groups", len(groups))
+
+	return groups, nil
+}
 
 // Made with Bob

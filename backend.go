@@ -51,6 +51,7 @@ func backend() *oauthBackend {
 		Paths: framework.PathAppend(
 			pathConfig(&b),
 			pathRole(&b),
+			pathScope(&b),
 			pathKey(&b),
 			pathToken(&b),
 			pathJWKS(&b),

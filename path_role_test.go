@@ -360,6 +360,229 @@ func TestRoleWithNonExistentKey(t *testing.T) {
 	assert.True(t, resp.IsError())
 	assert.Contains(t, resp.Error().Error(), "does not exist")
 }
+func TestRoleWithScopesSupported(t *testing.T) {
+	b, s := getTestBackend(t)
+
+	// First create a key
+	keyReq := &logical.Request{
+		Operation: logical.CreateOperation,
+		Path:      "key/test-key",
+		Storage:   s,
+		Data:      map[string]interface{}{},
+	}
+	keyResp, err := b.HandleRequest(context.Background(), keyReq)
+	assert.NoError(t, err)
+	if keyResp != nil && keyResp.IsError() {
+		t.Fatalf("failed to create key: %v", keyResp.Error())
+	}
+
+	// Create some scopes
+	scopeData := map[string]interface{}{
+		"template":    `{"groups": {{identity.entity.groups.names}}}`,
+		"description": "Groups scope",
+	}
+	req := &logical.Request{
+		Operation: logical.CreateOperation,
+		Path:      "scope/groups",
+		Data:      scopeData,
+		Storage:   s,
+	}
+	resp, err := b.HandleRequest(context.Background(), req)
+	assert.NoError(t, err)
+	assert.Nil(t, resp)
+
+	scopeData = map[string]interface{}{
+		"template":    `{"email": {{identity.entity.metadata.email}}}`,
+		"description": "Email scope",
+	}
+	req = &logical.Request{
+		Operation: logical.CreateOperation,
+		Path:      "scope/email",
+		Data:      scopeData,
+		Storage:   s,
+	}
+	resp, err = b.HandleRequest(context.Background(), req)
+	assert.NoError(t, err)
+	assert.Nil(t, resp)
+
+	// Create role with scopes_supported
+	role := map[string]interface{}{
+		"key":              "test-key",
+		"issuer":           "http://127.0.0.1:8200/v1/identity/oidc",
+		"ttl":              3600,
+		"max_ttl":          86400,
+		"scopes_supported": []string{"groups", "email"},
+	}
+
+	req = &logical.Request{
+		Operation: logical.CreateOperation,
+		Path:      "role/test-role",
+		Data:      role,
+		Storage:   s,
+	}
+
+	resp, err = b.HandleRequest(context.Background(), req)
+	assert.NoError(t, err)
+	assert.Nil(t, resp)
+
+	// Read the role back
+	req = &logical.Request{
+		Operation: logical.ReadOperation,
+		Path:      "role/test-role",
+		Storage:   s,
+	}
+
+	resp, err = b.HandleRequest(context.Background(), req)
+	assert.NoError(t, err)
+	assert.NotNil(t, resp)
+	assert.NotNil(t, resp.Data)
+
+	// Verify scopes_supported is present
+	scopesSupported, ok := resp.Data["scopes_supported"]
+	assert.True(t, ok, "scopes_supported should be present in response")
+	assert.NotNil(t, scopesSupported)
+
+	// Verify it's a slice with the correct values
+	scopesList, ok := scopesSupported.([]string)
+	assert.True(t, ok, "scopes_supported should be a string slice")
+	assert.Equal(t, 2, len(scopesList))
+	assert.Contains(t, scopesList, "groups")
+	assert.Contains(t, scopesList, "email")
+}
+
+func TestRoleWithNonExistentScope(t *testing.T) {
+	b, s := getTestBackend(t)
+
+	// First create a key
+	keyReq := &logical.Request{
+		Operation: logical.CreateOperation,
+		Path:      "key/test-key",
+		Storage:   s,
+		Data:      map[string]interface{}{},
+	}
+	keyResp, err := b.HandleRequest(context.Background(), keyReq)
+	assert.NoError(t, err)
+	if keyResp != nil && keyResp.IsError() {
+		t.Fatalf("failed to create key: %v", keyResp.Error())
+	}
+
+	// Try to create role with non-existent scope
+	role := map[string]interface{}{
+		"key":              "test-key",
+		"issuer":           "http://127.0.0.1:8200/v1/identity/oidc",
+		"ttl":              3600,
+		"max_ttl":          86400,
+		"scopes_supported": []string{"non-existent-scope"},
+	}
+
+	req := &logical.Request{
+		Operation: logical.CreateOperation,
+		Path:      "role/test-role",
+		Data:      role,
+		Storage:   s,
+	}
+
+	resp, err := b.HandleRequest(context.Background(), req)
+	assert.NoError(t, err)
+	assert.NotNil(t, resp)
+	assert.True(t, resp.IsError())
+	assert.Contains(t, resp.Error().Error(), "does not exist")
+}
+
+func TestRoleUpdateWithScopesSupported(t *testing.T) {
+	b, s := getTestBackend(t)
+
+	// First create a key
+	keyReq := &logical.Request{
+		Operation: logical.CreateOperation,
+		Path:      "key/test-key",
+		Storage:   s,
+		Data:      map[string]interface{}{},
+	}
+	keyResp, err := b.HandleRequest(context.Background(), keyReq)
+	assert.NoError(t, err)
+	if keyResp != nil && keyResp.IsError() {
+		t.Fatalf("failed to create key: %v", keyResp.Error())
+	}
+
+	// Create a scope
+	scopeData := map[string]interface{}{
+		"template":    `{"groups": {{identity.entity.groups.names}}}`,
+		"description": "Groups scope",
+	}
+	req := &logical.Request{
+		Operation: logical.CreateOperation,
+		Path:      "scope/groups",
+		Data:      scopeData,
+		Storage:   s,
+	}
+	resp, err := b.HandleRequest(context.Background(), req)
+	assert.NoError(t, err)
+	assert.Nil(t, resp)
+
+	// Create role without scopes_supported
+	role := map[string]interface{}{
+		"key":     "test-key",
+		"issuer":  "http://127.0.0.1:8200/v1/identity/oidc",
+		"ttl":     3600,
+		"max_ttl": 86400,
+	}
+
+	req = &logical.Request{
+		Operation: logical.CreateOperation,
+		Path:      "role/test-role",
+		Data:      role,
+		Storage:   s,
+	}
+
+	resp, err = b.HandleRequest(context.Background(), req)
+	assert.NoError(t, err)
+	assert.Nil(t, resp)
+
+	// Update role to add scopes_supported
+	updateData := map[string]interface{}{
+		"key":              "test-key",
+		"issuer":           "http://127.0.0.1:8200/v1/identity/oidc",
+		"ttl":              3600,
+		"max_ttl":          86400,
+		"scopes_supported": []string{"groups"},
+	}
+
+	req = &logical.Request{
+		Operation: logical.UpdateOperation,
+		Path:      "role/test-role",
+		Data:      updateData,
+		Storage:   s,
+	}
+
+	resp, err = b.HandleRequest(context.Background(), req)
+	assert.NoError(t, err)
+	assert.Nil(t, resp)
+
+	// Read the role back
+	req = &logical.Request{
+		Operation: logical.ReadOperation,
+		Path:      "role/test-role",
+		Storage:   s,
+	}
+
+	resp, err = b.HandleRequest(context.Background(), req)
+	assert.NoError(t, err)
+	assert.NotNil(t, resp)
+	assert.NotNil(t, resp.Data)
+
+	// Verify scopes_supported is present
+	scopesSupported, ok := resp.Data["scopes_supported"]
+	assert.True(t, ok, "scopes_supported should be present in response")
+	assert.NotNil(t, scopesSupported)
+
+	// Verify it's a slice with the correct value
+	scopesList, ok := scopesSupported.([]string)
+	assert.True(t, ok, "scopes_supported should be a string slice")
+	assert.Equal(t, 1, len(scopesList))
+	assert.Contains(t, scopesList, "groups")
+}
+
 
 func testRoleCreate(t *testing.T, b logical.Backend, s logical.Storage, name string, d map[string]interface{}, wantErr bool) {
 	t.Helper()

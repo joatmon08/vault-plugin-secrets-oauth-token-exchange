@@ -3,6 +3,7 @@
 
 plugin_directory = "/Users/rosemary/joatmon08/vault-plugin-secrets-oauth-token-exchange/bin"
 api_addr         = "http://127.0.0.1:8200"
+log_level = "debug"
 
 storage "inmem" {}
 

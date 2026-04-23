@@ -31,14 +31,15 @@ func pathOIDCDiscovery(b *oauthBackend) []*framework.Path {
 
 // oidcDiscoveryResponse represents the OpenID Connect discovery document
 type oidcDiscoveryResponse struct {
-	Issuer                           string   `json:"issuer"`
-	JWKSURI                          string   `json:"jwks_uri"`
-	TokenEndpoint                    string   `json:"token_endpoint"`
-	ResponseTypesSupported           []string `json:"response_types_supported"`
-	SubjectTypesSupported            []string `json:"subject_types_supported"`
-	IDTokenSigningAlgValuesSupported []string `json:"id_token_signing_alg_values_supported"`
-	GrantTypesSupported              []string `json:"grant_types_supported,omitempty"`
+	Issuer                            string   `json:"issuer"`
+	JWKSURI                           string   `json:"jwks_uri"`
+	TokenEndpoint                     string   `json:"token_endpoint"`
+	ResponseTypesSupported            []string `json:"response_types_supported"`
+	SubjectTypesSupported             []string `json:"subject_types_supported"`
+	IDTokenSigningAlgValuesSupported  []string `json:"id_token_signing_alg_values_supported"`
+	GrantTypesSupported               []string `json:"grant_types_supported,omitempty"`
 	TokenEndpointAuthMethodsSupported []string `json:"token_endpoint_auth_methods_supported,omitempty"`
+	ScopesSupported                   []string `json:"scopes_supported,omitempty"`
 }
 
 // pathOIDCDiscoveryRead returns the OpenID Connect discovery document
@@ -56,9 +57,15 @@ func (b *oauthBackend) pathOIDCDiscoveryRead(ctx context.Context, req *logical.R
 		baseURL = fmt.Sprintf("%s/v1/%s", req.Connection.RemoteAddr, req.MountPoint)
 	}
 
+	// Get list of available scopes
+	scopeNames, err := req.Storage.List(ctx, scopeStoragePrefix)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list scopes: %w", err)
+	}
+
 	discovery := &oidcDiscoveryResponse{
-		Issuer:      issuer,
-		JWKSURI:     fmt.Sprintf("%s/.well-known/keys", baseURL),
+		Issuer:        issuer,
+		JWKSURI:       fmt.Sprintf("%s/.well-known/keys", baseURL),
 		TokenEndpoint: fmt.Sprintf("%s/token", baseURL),
 		ResponseTypesSupported: []string{
 			"token",
@@ -82,6 +89,7 @@ func (b *oauthBackend) pathOIDCDiscoveryRead(ctx context.Context, req *logical.R
 			"client_secret_basic",
 			"client_secret_post",
 		},
+		ScopesSupported: scopeNames,
 	}
 
 	responseData, err := json.Marshal(discovery)
